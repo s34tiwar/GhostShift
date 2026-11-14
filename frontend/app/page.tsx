@@ -180,7 +180,8 @@ export default function Home() {
   const recovered = hasBackend
     ? Boolean(run?.status === "COMPLETED" && targetMachine?.healthy && actions.some((action) => action.status === "EFFECT_VERIFIED"))
     : previewPhase === "complete";
-  const incidentState = recovered ? "recovered" : activeRun || previewPhase === "running" ? "recovering" : faulted ? "faulted" : "ready";
+  const terminalReview = Boolean(run && ["DENIED", "FAILED", "NEEDS_RECONCILIATION"].includes(run.status));
+  const incidentState = recovered ? "recovered" : activeRun || terminalReview || previewPhase === "running" ? "recovering" : faulted ? "faulted" : "ready";
   const statusText = hasBackend && !loaded ? "Connecting to backend"
     : hasBackend && machines.length === 0 ? "Backend unavailable"
     : hasBackend && run?.status === "COMPLETED" && machines[1]?.status === "reconciled" ? "Recovery verified"
@@ -200,6 +201,7 @@ export default function Home() {
       <BackendActivity
         states={activity}
         live={hasBackend}
+        run={run}
         runStatus={run?.status}
         incidentState={incidentState}
         machine={targetMachine}
