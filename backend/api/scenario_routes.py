@@ -23,6 +23,8 @@ class SyncFailureRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     confirm: Literal[True]
+    # force=true aborts every active run (FAILED + RUN_ABORTED_BY_RESET audit) first.
+    force: bool = False
 
 
 @router.post("/scenarios/sync_failure", response_model=MachineHealth)
@@ -37,29 +39,45 @@ async def sync_failure(body: SyncFailureRequest):
 
 @router.post("/scenarios/reset")
 async def reset_scenario(body: ResetRequest):
+    aborted: list[str] = []
+    if body.force:
+        aborted = await ledger.abort_active_runs("demo reset")
+    elif await ledger.has_active_runs():
+        raise HTTPException(
+            status_code=409,
+            detail="a recovery run is still active; retry with force=true to abort it",
+        )
     try:
-        if await ledger.has_active_runs():
-            raise HTTPException(status_code=409, detail="a recovery run is still active")
-        return await factory_client.reset()
+        result = await factory_client.reset()
     except factory_client.FactoryUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503, detail={"message": str(exc), "aborted_run_ids": aborted}
+        ) from exc
     except factory_client.FactoryResponseError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=exc.status_code, detail={"message": exc.detail, "aborted_run_ids": aborted}
+        ) from exc
+    return {**result, "aborted_run_ids": aborted}
 
 
 @router.post("/runs", status_code=202, response_model=RunCreateResponse)
 async def create_run(body: RunCreateRequest):
+    # A demo scenario (e.g. unsafe_shutdown) may target a healthy machine; a normal
+    # recovery run still needs a fault to recover.
+    if body.scenario is None:
+        try:
+            health = await factory_client.get_health(body.machine_id)
+        except factory_client.FactoryUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        except factory_client.FactoryResponseError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if health.get("healthy") and health.get("fault_type", "NONE") == "NONE":
+            raise HTTPException(status_code=409, detail=f"{body.machine_id} has no fault to recover")
+    extra = {"scenario": body.scenario} if body.scenario is not None else {}
     try:
-        health = await factory_client.get_health(body.machine_id)
-    except factory_client.FactoryUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except factory_client.FactoryResponseError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    if health.get("healthy") and health.get("fault_type", "NONE") == "NONE":
-        raise HTTPException(status_code=409, detail=f"{body.machine_id} has no fault to recover")
-    try:
-        run_id = await storage.enqueue_run(body.machine_id, body.crash_armed)
+        run_id = await storage.enqueue_run(body.machine_id, body.crash_armed, **extra)
     except storage.ActiveRunExistsError as exc:
+        # The message names the blocking run when the exception carries its id.
         raise HTTPException(status_code=409, detail=str(exc))
     return {"run_id": run_id, "status": "QUEUED"}
 
