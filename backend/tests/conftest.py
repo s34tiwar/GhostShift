@@ -1,7 +1,16 @@
 """Shared fixtures for Rhea's reliability tests."""
+import sys
+from pathlib import Path
+
 import pytest_asyncio
 
-from reliability import policies, storage
+# Make `reliability`, `api`, `agent` and `tests` importable whether pytest is run
+# from the repo root or from backend/.
+_BACKEND_DIR = str(Path(__file__).resolve().parents[1])
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+from reliability import policies, storage  # noqa: E402
 from tests.fakes import TEST_COLLECTIONS, TEST_DB
 
 

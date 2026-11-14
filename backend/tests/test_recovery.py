@@ -2,10 +2,12 @@
 import asyncio
 import os
 
+import httpx
 import pytest
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 
+from api.schemas import MachineHealth
 from reliability import executor, ledger, policies, storage
 from tests.fakes import TEST_DB, FakeFactory, SimulatedCrash
 
@@ -275,3 +277,98 @@ async def test_ambiguous_verify_requires_review_without_retry(ready):
     assert outcome["status"] == "FAILED"
     assert outcome["actions"][0]["status"] == "REQUIRES_REVIEW"
     assert len(factory.mutation_calls) == 1
+
+
+# --- factory client ----------------------------------------------------------
+
+
+def _client_with(handler, token=None):
+    client = executor.FactoryClient("http://factory.test", token=token)
+    client._http = httpx.AsyncClient(
+        base_url="http://factory.test", transport=httpx.MockTransport(handler)
+    )
+    return client
+
+
+@pytest.mark.asyncio
+async def test_factory_client_retries_503_then_succeeds(monkeypatch):
+    monkeypatch.setattr(executor, "RETRY_503_BACKOFF", 0)
+    seen = []
+
+    def handler(request):
+        seen.append(request.read())
+        if len(seen) <= 2:
+            return httpx.Response(503, json={"detail": "retry"})
+        return httpx.Response(200, json={"applied": True, "replayed": False})
+
+    client = _client_with(handler)
+    result = await client.restart_sync("machine_b", "op_1")
+    assert result["applied"] is True
+    assert len(seen) == 3
+    assert len(set(seen)) == 1  # every attempt carried the same operation_id body
+
+
+@pytest.mark.asyncio
+async def test_factory_client_gives_up_after_three_retries(monkeypatch):
+    monkeypatch.setattr(executor, "RETRY_503_BACKOFF", 0)
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(503)
+
+    client = _client_with(handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.health("machine_b")
+    assert len(calls) == 1 + executor.RETRY_503_MAX
+
+
+@pytest.mark.asyncio
+async def test_factory_client_does_not_retry_409_or_timeouts(monkeypatch):
+    monkeypatch.setattr(executor, "RETRY_503_BACKOFF", 0)
+    calls = []
+
+    def conflict(request):
+        calls.append("409")
+        return httpx.Response(409, json={"detail": "operation_id reused"})
+
+    with pytest.raises(httpx.HTTPStatusError) as err:
+        await _client_with(conflict).restart_sync("machine_b", "op_1")
+    assert err.value.response.status_code == 409
+    assert calls == ["409"]
+
+    def timeout(request):
+        calls.append("timeout")
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(httpx.ReadTimeout):
+        await _client_with(timeout).restart_sync("machine_b", "op_1")
+    assert calls == ["409", "timeout"]
+
+
+def test_machine_health_parses_factory_payload():
+    health = MachineHealth.model_validate(
+        {
+            "machine_id": "machine_b",
+            "healthy": False,
+            "fault_type": "SYNC_PROCESS_DOWN",
+            "sync_running": False,
+            "network_connected": True,
+            "backlog": 125,
+            "fault_epoch": 3,
+            "last_operation_id": None,
+            "restart_count": 2,
+            "reconnect_count": 1,
+            "message": "Sync process is not running.",
+            "some_future_field": "ignored",
+        }
+    )
+    assert health.restart_count == 2
+    assert health.reconnect_count == 1
+    assert health.message == "Sync process is not running."
+    assert not hasattr(health, "some_future_field")
+    minimal = MachineHealth.model_validate(
+        {k: v for k, v in health.model_dump().items()
+         if k not in ("restart_count", "reconnect_count", "message")}
+    )
+    assert (minimal.restart_count, minimal.reconnect_count, minimal.message) == (0, 0, None)

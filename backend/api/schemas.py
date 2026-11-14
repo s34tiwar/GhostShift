@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # All timestamps in these models are UTC ISO-8601 strings.
 
@@ -47,7 +47,9 @@ class Proposal(BaseModel):
 
 
 class MachineHealth(BaseModel):
-    """Factory GET /machines/{id}/health response."""
+    """Factory GET /machines/{id}/health response. Unknown fields are ignored."""
+
+    model_config = ConfigDict(extra="ignore")
 
     machine_id: MachineId
     healthy: bool
@@ -57,6 +59,9 @@ class MachineHealth(BaseModel):
     backlog: int
     fault_epoch: int
     last_operation_id: str | None = None
+    restart_count: int = 0
+    reconnect_count: int = 0
+    message: str | None = None
 
 
 class RunView(BaseModel):
