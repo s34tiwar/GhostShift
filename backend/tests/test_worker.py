@@ -268,3 +268,89 @@ async def test_planner_without_trace_function_keeps_plan_recovery_path(ready, mo
     assert run["retrieval_mode"] == "fallback_deterministic"
     assert run["planner_mode"] == "fallback_deterministic"
     assert run["retrieval_score"] is None
+
+
+# --- unsafe_shutdown demo scenario ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unsafe_scenario_run_is_denied_by_the_policy_gate(ready):
+    factory = FakeFactory()
+    planner_calls = []
+
+    async def planner(health):  # must never be used for the scenario
+        planner_calls.append(health)
+        raise AssertionError("planner must be skipped")
+
+    run_id = await storage.enqueue_run("machine_b", scenario="unsafe_shutdown")
+    assert (await _run(run_id))["scenario"] == "unsafe_shutdown"
+    assert await worker.poll_once("w1", factory, planner) == run_id
+
+    run = await _run(run_id)
+    assert run["status"] == "DENIED"
+    assert run["planner_mode"] == "demo_scenario"
+    assert run["procedure_id"] == "proc_unsafe_demo"
+    assert planner_calls == []
+
+    # the factory saw no mutating call and no verify call (only the executor's
+    # read-only health GET that pins the fault epoch)
+    assert factory.mutation_calls == [] and factory.receipts == {}
+    assert [method for method, _ in factory.calls] == ["health"]
+
+    # audit order: PLANNER_RESULT (labelled demo) then POLICY_CHECK (denied)
+    audit = await storage.audit_events().find({"run_id": run_id}).sort("_id", 1).to_list(None)
+    types = [e["event_type"] for e in audit]
+    assert types.index("PLANNER_RESULT") < types.index("POLICY_CHECK")
+    planner_event = audit[types.index("PLANNER_RESULT")]
+    assert planner_event["detail"]["scenario"] == "unsafe_shutdown"
+    assert "Demo scenario" in planner_event["reason"]
+    check = audit[types.index("POLICY_CHECK")]
+    assert check["decision"] == "DENIED" and check["detail"]["tool"] == "shutdown_factory"
+
+    # ledger entry DENIED, no receipt, never executed
+    (action,) = await ledger.get_machine_ledger(run_id)
+    assert action["status"] == "DENIED"
+    assert action["action_type"] == "shutdown_factory"
+    assert action["external_receipt"] is None and action["attempt_count"] == 0
+
+    # DENIED is terminal, so the machine is free again
+    assert await storage.enqueue_run("machine_b")
+
+
+@pytest.mark.asyncio
+async def test_run_without_scenario_behaves_as_before(ready):
+    factory = FakeFactory()
+    run_id = await storage.enqueue_run("machine_b")
+    assert (await _run(run_id))["scenario"] is None
+    assert await worker.poll_once("w1", factory, stub_planner()) == run_id
+    run = await _run(run_id)
+    assert run["status"] == "COMPLETED"
+    assert run["planner_mode"] == "stub"
+    assert factory.restart_count == 1
+    # worker health read, executor epoch pin, the repair, then read-back verification
+    assert [m for m, _ in factory.calls] == ["health", "health", "restart_sync", "verify"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_does_not_bypass_the_active_run_guard(ready):
+    await storage.enqueue_run("machine_b", scenario="unsafe_shutdown")
+    with pytest.raises(storage.ActiveRunExistsError):
+        await storage.enqueue_run("machine_b", scenario="unsafe_shutdown")
+
+
+def test_unknown_scenario_is_rejected_by_schema_and_storage():
+    from pydantic import ValidationError
+
+    from api.schemas import RunCreateRequest
+
+    ok = RunCreateRequest(machine_id="machine_b", scenario="unsafe_shutdown")
+    assert ok.scenario == "unsafe_shutdown"
+    assert RunCreateRequest(machine_id="machine_b").scenario is None
+    with pytest.raises(ValidationError):
+        RunCreateRequest(machine_id="machine_b", scenario="drop_database")
+
+    async def bad():
+        await storage.enqueue_run("machine_b", scenario="drop_database")
+
+    with pytest.raises(ValueError):
+        asyncio.run(bad())

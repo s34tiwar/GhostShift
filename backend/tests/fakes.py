@@ -20,8 +20,10 @@ class FakeFactory:
         self.restart_count = 0
         self.mutation_calls = []  # (tool, machine_id, operation_id)
         self.verify_error = False
+        self.calls = []  # (method, machine_id): every call, reads included
 
     async def health(self, machine_id):
+        self.calls.append(("health", machine_id))
         fault = self.fault[machine_id]
         return {
             "machine_id": machine_id,
@@ -35,6 +37,7 @@ class FakeFactory:
         }
 
     def _apply(self, tool, fixes, machine_id, operation_id):
+        self.calls.append((tool, machine_id))
         self.mutation_calls.append((tool, machine_id, operation_id))
         replayed = operation_id in self.receipts
         if not replayed:
@@ -57,6 +60,7 @@ class FakeFactory:
         return self._apply("reconnect_network", "NETWORK_DISCONNECTED", machine_id, operation_id)
 
     async def verify(self, machine_id, expected_action, operation_id):
+        self.calls.append(("verify", machine_id))
         if self.verify_error:
             raise RuntimeError("verify unavailable")
         return {

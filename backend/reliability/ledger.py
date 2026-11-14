@@ -220,6 +220,7 @@ async def get_run(run_id: str) -> dict | None:
         retrieval_mode=doc.get("retrieval_mode"),
         current_action_id=doc.get("current_action_id"),
         restart_count=doc.get("restart_count", 0),
+        recovery_count=doc.get("recovery_attempts", 0),
         worker_status=_worker_status(doc),
     ).model_dump()
 

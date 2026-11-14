@@ -100,6 +100,9 @@ class RunCreateRequest(BaseModel):
 
     machine_id: MachineId
     crash_armed: bool = False
+    # Demo only: "unsafe_shutdown" makes the worker propose shutdown_factory so the
+    # policy gate visibly denies it. Unknown values are rejected here.
+    scenario: Literal["unsafe_shutdown"] | None = None
 
 
 class RunCreateResponse(BaseModel):
