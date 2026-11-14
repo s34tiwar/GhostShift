@@ -4,8 +4,11 @@ import json
 import os
 from typing import Any, Literal, Mapping, Optional
 
+from dotenv import load_dotenv
+from google import genai
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field
+from pymongo import AsyncMongoClient
 
 from .procedures import MachineId, RecoveryTool
 from .retrieval import (
@@ -151,6 +154,51 @@ async def plan_recovery(
         return _fallback_result(machine_health, type(exc).__name__)
 
 
+async def _plan_recovery_from_environment(
+    machine_health: Mapping[str, object],
+) -> PlanningResult:
+    """Run the planner with process-local clients configured from the worker env."""
+
+    load_dotenv()
+    mongo_uri = os.getenv("MONGODB_URI")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not mongo_uri or not gemini_key:
+        return _fallback_result(
+            machine_health, "MongoDB or Gemini environment unavailable"
+        )
+
+    mongo = AsyncMongoClient(mongo_uri)
+    gemini = genai.Client(api_key=gemini_key)
+    async_gemini = gemini.aio
+    try:
+        database = mongo[os.getenv("MONGODB_DB", "ghostshift")]
+        return await plan_recovery(
+            machine_health,
+            collection=database["recovery_procedures"],
+            gemini_client=async_gemini,
+        )
+    except Exception as exc:
+        return _fallback_result(machine_health, type(exc).__name__)
+    finally:
+        await async_gemini.aclose()
+        await mongo.close()
+
+
+async def _resolve_plan(
+    machine_health: Mapping[str, object],
+    *,
+    collection: Any = None,
+    gemini_client: Any = None,
+) -> PlanningResult:
+    if collection is None and gemini_client is None:
+        return await _plan_recovery_from_environment(machine_health)
+    return await plan_recovery(
+        machine_health,
+        collection=collection,
+        gemini_client=gemini_client,
+    )
+
+
 async def propose_recovery(
     machine_health: Mapping[str, object],
     *,
@@ -162,9 +210,38 @@ async def propose_recovery(
     This function never executes a repair or calls a state-changing endpoint.
     """
 
-    result = await plan_recovery(
+    result = await _resolve_plan(
         machine_health,
         collection=collection,
         gemini_client=gemini_client,
     )
     return result.proposal
+
+
+async def propose_recovery_with_trace(
+    machine_health: Mapping[str, object],
+    *,
+    collection: Any = None,
+    gemini_client: Any = None,
+) -> dict:
+    """Return Rhea's proposal plus UI-safe retrieval evidence.
+
+    The worker may call this with only machine_health. Optional dependencies are
+    retained for deterministic unit and integration tests.
+    """
+
+    result = await _resolve_plan(
+        machine_health,
+        collection=collection,
+        gemini_client=gemini_client,
+    )
+    used_fallback = result.planner_mode == "deterministic_fallback"
+    return {
+        "proposal": result.proposal.model_dump(),
+        "retrieval_mode": (
+            "fallback_deterministic"
+            if used_fallback
+            else result.retrieval.retrieval_mode
+        ),
+        "score": None if used_fallback else result.retrieval.score,
+    }

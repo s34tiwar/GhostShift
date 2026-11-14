@@ -10,6 +10,7 @@ from backend.agent.graph import (
     RecoveryProposal,
     plan_recovery,
     propose_recovery,
+    propose_recovery_with_trace,
 )
 from backend.agent.procedures import (
     NoMatchingProcedureError,
@@ -168,13 +169,13 @@ class ProposalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("additionalProperties", GEMINI_RESPONSE_SCHEMA)
 
     async def test_planner_proposes_restart_for_sync_failure(self) -> None:
-        proposal = await propose_recovery(SYNC_FAILURE)
+        proposal = (await plan_recovery(SYNC_FAILURE)).proposal
         self.assertEqual(proposal.tool, "restart_sync")
         self.assertEqual(proposal.machine_id, "machine_b")
         self.assertEqual(proposal.procedure_id, "proc_sync_restart")
 
     async def test_planner_proposes_reconnect_for_network_failure(self) -> None:
-        proposal = await propose_recovery(NETWORK_FAILURE)
+        proposal = (await plan_recovery(NETWORK_FAILURE)).proposal
         self.assertEqual(proposal.tool, "reconnect_network")
         self.assertEqual(proposal.machine_id, "machine_c")
 
@@ -228,6 +229,40 @@ class ProposalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.planner_mode, "deterministic_fallback")
         self.assertEqual(result.proposal.tool, "restart_sync")
         self.assertEqual(result.fallback_reason, "ValueError")
+
+    async def test_trace_exposes_ui_evidence_without_changing_proposal(self) -> None:
+        document = SEED_PROCEDURES[0].model_dump(exclude={"embedding"})
+        document["score"] = 0.92
+        proposal = RecoveryProposal(
+            tool="restart_sync",
+            machine_id="machine_b",
+            procedure_id="proc_sync_restart",
+            rationale="The retrieved procedure matches the live sync fault.",
+        )
+
+        trace = await propose_recovery_with_trace(
+            SYNC_FAILURE,
+            collection=FakeCollection([document]),
+            gemini_client=FakeGemini(proposal=proposal),
+        )
+
+        self.assertEqual(
+            set(trace["proposal"]),
+            {"tool", "machine_id", "procedure_id", "rationale"},
+        )
+        self.assertEqual(trace["retrieval_mode"], "atlas_vector")
+        self.assertEqual(trace["score"], 0.92)
+
+    async def test_trace_labels_fallback_exactly_as_rhea_requested(self) -> None:
+        trace = await propose_recovery_with_trace(
+            SYNC_FAILURE,
+            collection=FakeCollection([]),
+            gemini_client=FakeGemini(),
+        )
+
+        self.assertEqual(trace["retrieval_mode"], "fallback_deterministic")
+        self.assertIsNone(trace["score"])
+        self.assertEqual(trace["proposal"]["tool"], "restart_sync")
 
 
 if __name__ == "__main__":
