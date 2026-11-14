@@ -13,6 +13,11 @@ from api.schemas import new_run_id
 load_dotenv()
 
 AGENT_ID = "factory_recovery_agent"
+ACTIVE_RUN_STATUSES = ("QUEUED", "CREATED", "DIAGNOSING", "ACTION_PENDING", "RUNNING", "NEEDS_RECONCILIATION")
+
+
+class ActiveRunExistsError(Exception):
+    """A machine already has an unfinished recovery run."""
 
 # One client per process / event loop, created lazily. The worker and the API
 # are separate processes, so each builds its own. Never share across loops.
@@ -90,6 +95,12 @@ async def init_indexes() -> None:
 
 async def enqueue_run(machine_id: str, crash_armed: bool = False) -> str:
     """Insert a QUEUED run and return its run_id."""
+    existing = await agent_runs().find_one(
+        {"machine_id": machine_id, "status": {"$in": list(ACTIVE_RUN_STATUSES)}},
+        {"_id": 1},
+    )
+    if existing is not None:
+        raise ActiveRunExistsError(f"{machine_id} already has an active run")
     run_id = new_run_id()
     now = utc_now()
     await agent_runs().insert_one(

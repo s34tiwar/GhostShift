@@ -1,6 +1,8 @@
 """Shared test doubles. Owner: Rhea."""
 
-TEST_DB = "ghostshift_test_rhea"
+# Reliability tests never use a fixed database name: conftest creates a random
+# `ghostshift_test_<8 hex>` database per pytest session (see `test_db_name`).
+TEST_DB_PREFIX = "ghostshift_test_"
 TEST_COLLECTIONS = ("agent_runs", "action_ledger", "policies", "audit_events")
 
 

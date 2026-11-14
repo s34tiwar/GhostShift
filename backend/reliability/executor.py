@@ -6,6 +6,7 @@ safe reconciliation. An HTTP 200 from the factory is never proof on its own.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ from reliability import ledger, policies
 
 PROPOSAL_FIELDS = ("tool", "machine_id", "procedure_id", "rationale")
 MAX_ATTEMPTS = 2  # the original call plus one same-key retry
+RETRY_503_MAX = 3  # extra HTTP attempts on a 503 (the factory says "just retry")
+RETRY_503_BACKOFF = 0.3  # seconds between those attempts
 
 # Unique per process boot, so a restarted worker can reclaim its own dead claim.
 _DEFAULT_OWNER = f"worker_{os.getpid()}_{uuid4().hex[:8]}"
@@ -26,23 +29,38 @@ _DEFAULT_OWNER = f"worker_{os.getpid()}_{uuid4().hex[:8]}"
 class FactoryClient:
     """Thin HTTP client for the factory service. Never logs the base URL."""
 
-    def __init__(self, base_url: str | None = None):
+    def __init__(self, base_url: str | None = None, token: str | None = None):
         base_url = base_url or os.environ.get("FACTORY_BASE_URL")
         if not base_url:
             raise RuntimeError("FACTORY_BASE_URL is not set")
+        # Optional shared secret. The factory requires X-Factory-Token on every POST
+        # (GETs are open). Kept private and never logged or put in an error message.
+        self._token = token or os.environ.get("FACTORY_TOKEN") or None
         self._http = httpx.AsyncClient(
             base_url=base_url, timeout=httpx.Timeout(5.0, connect=2.0)
         )
 
-    async def _get(self, path: str, params: dict | None = None) -> dict:
-        response = await self._http.get(path, params=params)
+    async def _request(self, method: str, path: str, **kwargs) -> dict:
+        """One factory call. Retries HTTP 503 only ("lost races", safe to repeat).
+
+        POST bodies carry the same operation_id on every attempt, so a retry can
+        never act twice. Timeouts, 409 and other 4xx/5xx are NOT retried here: a
+        timed-out POST goes straight to read-back verification.
+        """
+        for attempt in range(1 + RETRY_503_MAX):
+            response = await self._http.request(method, path, **kwargs)
+            if response.status_code != 503 or attempt == RETRY_503_MAX:
+                break
+            await asyncio.sleep(RETRY_503_BACKOFF)
         response.raise_for_status()
         return response.json()
 
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        return await self._request("GET", path, params=params)
+
     async def _post(self, path: str, body: dict) -> dict:
-        response = await self._http.post(path, json=body)
-        response.raise_for_status()
-        return response.json()
+        headers = {"X-Factory-Token": self._token} if self._token else None
+        return await self._request("POST", path, json=body, headers=headers)
 
     async def health(self, machine_id: str) -> dict:
         return await self._get(f"/machines/{machine_id}/health")
@@ -85,8 +103,19 @@ def get_factory() -> FactoryClient:
 # --- crash injection ---------------------------------------------------------
 
 
+class CrashNotAllowedError(RuntimeError):
+    """_crash() was called outside a process that opted in to dying."""
+
+
+# Only worker.main() sets this, at boot. Anywhere else (API, scripts, an unpatched
+# test) the demo crash raises instead of killing the interpreter.
+REAL_CRASH = False
+
+
 def _crash() -> None:
     """Kill this worker process only. Tests patch this."""
+    if not REAL_CRASH:
+        raise CrashNotAllowedError("os._exit(42) is only allowed in the worker process")
     os._exit(42)
 
 
