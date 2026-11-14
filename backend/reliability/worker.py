@@ -120,10 +120,14 @@ def build_default_planner():
     Without GEMINI_API_KEY her code takes its own labelled deterministic fallback.
     """
     try:
-        from agent.graph import plan_recovery
+        import agent.graph as agent_graph
+
+        plan_recovery = agent_graph.plan_recovery
     except Exception as exc:
         log.warning("agent planner unavailable: %s", type(exc).__name__)
         return None, None
+    # Shivani's trace entry point, when her branch has landed. Optional.
+    trace_fn = getattr(agent_graph, "propose_recovery_with_trace", None)
 
     gemini = None
     if os.environ.get("GEMINI_API_KEY"):
@@ -139,11 +143,24 @@ def build_default_planner():
     collection = storage.get_db()["recovery_procedures"]
 
     async def planner(health: dict) -> dict:
+        if trace_fn is not None:
+            # Same clients as above, so her code never opens its own connections.
+            trace = await trace_fn(health, collection=collection, gemini_client=gemini)
+            retrieval_mode = trace.get("retrieval_mode")
+            return {
+                "proposal": trace.get("proposal"),
+                # Only a real vector hit means the model path ran.
+                "planner_mode": "gemini" if retrieval_mode == "atlas_vector" else "deterministic_fallback",
+                "retrieval_mode": retrieval_mode,
+                "score": trace.get("score"),
+                "fallback_reason": None,
+            }
         result = await plan_recovery(health, collection=collection, gemini_client=gemini)
         return {
             "proposal": result.proposal.model_dump(),
             "planner_mode": result.planner_mode,
             "retrieval_mode": result.retrieval.retrieval_mode,
+            "score": result.retrieval.score,
             "fallback_reason": result.fallback_reason,
         }
 
@@ -168,6 +185,7 @@ async def _plan(run_id: str, machine_id: str, health: dict, planner, owner: str)
                     {
                         "planner_mode": outcome.get("planner_mode"),
                         "retrieval_mode": outcome.get("retrieval_mode"),
+                        "score": outcome.get("score"),
                         "tool": proposal["tool"],
                         "procedure_id": proposal["procedure_id"],
                     },
@@ -177,6 +195,8 @@ async def _plan(run_id: str, machine_id: str, health: dict, planner, owner: str)
                     run_id,
                     planner_mode=outcome.get("planner_mode"),
                     retrieval_mode=outcome.get("retrieval_mode"),
+                    retrieval_score=outcome.get("score"),
+                    procedure_id=proposal["procedure_id"],
                 )
                 return proposal, outcome.get("retrieval_mode")
             reason = "agent planner returned an invalid proposal"
@@ -199,7 +219,11 @@ async def _plan(run_id: str, machine_id: str, health: dict, planner, owner: str)
         None,
     )
     await ledger.set_run_fields(
-        run_id, planner_mode=LOCAL_FALLBACK_MODE, retrieval_mode=LOCAL_FALLBACK_MODE
+        run_id,
+        planner_mode=LOCAL_FALLBACK_MODE,
+        retrieval_mode=LOCAL_FALLBACK_MODE,
+        retrieval_score=None,
+        procedure_id=proposal["procedure_id"],
     )
     return proposal, LOCAL_FALLBACK_MODE
 
@@ -268,6 +292,11 @@ async def poll_once(owner: str, factory, planner) -> str | None:
 # --- process entry -----------------------------------------------------------
 
 
+def enable_real_crash() -> None:
+    """Opt this process in to the demo crash. Only the worker process does this."""
+    executor.REAL_CRASH = True
+
+
 def _install_signal_handlers(stop: asyncio.Event) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -282,6 +311,7 @@ async def main() -> None:
     owner = new_owner_id()
     stop = asyncio.Event()
     _install_signal_handlers(stop)
+    enable_real_crash()
 
     factory = None
     closer = None

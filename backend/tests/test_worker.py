@@ -179,3 +179,91 @@ async def test_healthy_machine_abstains_and_fails(ready):
     assert run["status"] == "FAILED"
     assert await _events(run_id, "PLANNER_ABSTAINED") == 1
     assert factory.mutation_calls == []
+
+
+# --- crash guard and planner trace ---------------------------------------------
+
+
+def test_default_crash_raises_when_not_enabled(monkeypatch):
+    monkeypatch.setattr(executor, "REAL_CRASH", False)
+    assert issubclass(executor.CrashNotAllowedError, RuntimeError)
+    with pytest.raises(executor.CrashNotAllowedError):
+        executor._crash()
+
+
+def test_worker_boot_enables_real_crash(monkeypatch):
+    monkeypatch.setattr(executor, "REAL_CRASH", False)
+    worker.enable_real_crash()
+    assert executor.REAL_CRASH is True  # monkeypatch restores the original afterwards
+
+
+def _trace_planner(monkeypatch, trace):
+    """build_default_planner() wired to a fake agent.graph.propose_recovery_with_trace."""
+    import agent.graph as agent_graph
+
+    calls = []
+
+    async def fake_trace(health, *, collection=None, gemini_client=None):
+        calls.append(health["machine_id"])
+        return trace
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # never reach the real model
+    monkeypatch.setattr(agent_graph, "propose_recovery_with_trace", fake_trace, raising=False)
+    planner, closer = worker.build_default_planner()
+    assert planner is not None
+    return planner, calls
+
+
+@pytest.mark.asyncio
+async def test_planner_uses_trace_and_records_evidence(ready, monkeypatch):
+    planner, calls = _trace_planner(monkeypatch, {
+        "proposal": {"tool": "restart_sync", "machine_id": "machine_b",
+                     "procedure_id": "proc_sync_restart", "rationale": "vector hit"},
+        "retrieval_mode": "atlas_vector",
+        "score": 0.91,
+    })
+    factory = FakeFactory()
+    run_id = await storage.enqueue_run("machine_b")
+    assert await worker.poll_once("w1", factory, planner) == run_id
+    run = await _run(run_id)
+    assert calls == ["machine_b"]
+    assert run["status"] == "COMPLETED"
+    assert run["retrieval_mode"] == "atlas_vector"
+    assert run["planner_mode"] == "gemini"
+    assert run["retrieval_score"] == 0.91
+    assert run["procedure_id"] == "proc_sync_restart"
+    event = await storage.audit_events().find_one({"run_id": run_id, "event_type": "PLANNER_RESULT"})
+    assert event["detail"]["score"] == 0.91
+    assert factory.restart_count == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_trace_fallback_is_labelled_honestly(ready, monkeypatch):
+    planner, _ = _trace_planner(monkeypatch, {
+        "proposal": {"tool": "restart_sync", "machine_id": "machine_b",
+                     "procedure_id": "proc_sync_restart", "rationale": "fallback"},
+        "retrieval_mode": "fallback_deterministic",
+        "score": None,
+    })
+    run_id = await storage.enqueue_run("machine_b")
+    assert await worker.poll_once("w1", FakeFactory(), planner) == run_id
+    run = await _run(run_id)
+    assert run["planner_mode"] == "deterministic_fallback"  # never claims the model ran
+    assert run["retrieval_mode"] == "fallback_deterministic"
+    assert run["retrieval_score"] is None
+
+
+@pytest.mark.asyncio
+async def test_planner_without_trace_function_keeps_plan_recovery_path(ready, monkeypatch):
+    import agent.graph as agent_graph
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delattr(agent_graph, "propose_recovery_with_trace", raising=False)
+    planner, _ = worker.build_default_planner()
+    run_id = await storage.enqueue_run("machine_b")
+    assert await worker.poll_once("w1", FakeFactory(), planner) == run_id
+    run = await _run(run_id)
+    assert run["status"] == "COMPLETED"
+    assert run["retrieval_mode"] == "deterministic_fallback"  # her plan_recovery label
+    assert run["planner_mode"] == "deterministic_fallback"
+    assert run["retrieval_score"] is None
