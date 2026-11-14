@@ -279,3 +279,69 @@ async def resume_run(run_id: str) -> dict:
             raise ValueError(f"run {run_id} does not exist")
         return {"run_id": run_id, "status": current["status"]}
     return {"run_id": run_id, "status": "NEEDS_RECONCILIATION"}
+
+
+# --- executor helpers --------------------------------------------------------
+
+
+async def reclaim_stale_action(action_id: str, owner: str) -> bool:
+    """Take over an action for one same-key retry. True only for the winner.
+
+    Matches an EXECUTING action claimed by a different owner (its worker died),
+    or an AUTHORIZED action that was never claimed.
+    """
+    doc = await storage.action_ledger().find_one_and_update(
+        {
+            "action_id": action_id,
+            "$or": [
+                {"status": "EXECUTING", "claimed_by": {"$ne": owner}},
+                {"status": "AUTHORIZED"},
+            ],
+        },
+        [
+            {
+                "$set": {
+                    "status": "EXECUTING",
+                    "claimed_by": owner,
+                    "started_at": {"$ifNull": ["$started_at", storage.utc_now()]},
+                    "attempt_count": {"$add": ["$attempt_count", 1]},
+                }
+            }
+        ],
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc is not None
+
+
+async def save_receipt(action_id: str, receipt: dict) -> None:
+    """Record the factory's receipt. Does not change status: a receipt is not proof."""
+    await storage.action_ledger().update_one(
+        {"action_id": action_id, "status": "EXECUTING"},
+        {"$set": {"external_receipt": receipt}},
+    )
+
+
+async def fire_crash_once(run_id: str) -> bool:
+    """Atomically flip crash_fired. True for exactly one caller per armed run."""
+    doc = await storage.agent_runs().find_one_and_update(
+        {"_id": run_id, "crash_armed": True, "crash_fired": False},
+        {"$set": {"crash_fired": True, "updated_at": storage.utc_now()}},
+    )
+    return doc is not None
+
+
+async def get_fault_epoch(run_id: str) -> int | None:
+    """The fault epoch pinned on the run, or None if not pinned yet."""
+    doc = await storage.agent_runs().find_one({"_id": run_id}, {"fault_epoch": 1})
+    if doc is None:
+        raise ValueError(f"run {run_id} does not exist")
+    return doc.get("fault_epoch")
+
+
+async def pin_fault_epoch(run_id: str, epoch: int) -> int:
+    """Pin the run's fault epoch once; later calls return the pinned value."""
+    await storage.agent_runs().update_one(
+        {"_id": run_id, "fault_epoch": None}, {"$set": {"fault_epoch": epoch}}
+    )
+    pinned = await get_fault_epoch(run_id)
+    return pinned
