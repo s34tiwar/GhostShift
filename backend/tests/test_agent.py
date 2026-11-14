@@ -124,7 +124,7 @@ class RetrievalTests(unittest.TestCase):
 
     def test_fallback_is_labelled_and_has_no_vector_score(self) -> None:
         result = retrieve_with_fallback(NETWORK_FAILURE)
-        self.assertEqual(result.retrieval_mode, "deterministic_fallback")
+        self.assertEqual(result.retrieval_mode, "fallback_deterministic")
         self.assertIsNone(result.score)
 
 
@@ -233,7 +233,7 @@ class ProposalTests(unittest.IsolatedAsyncioTestCase):
             gemini_client=FakeGemini(proposal=mismatched),
         )
 
-        self.assertEqual(result.planner_mode, "deterministic_fallback")
+        self.assertEqual(result.planner_mode, "fallback_deterministic")
         self.assertEqual(result.proposal.tool, "restart_sync")
         self.assertEqual(result.fallback_reason, "ValueError")
 

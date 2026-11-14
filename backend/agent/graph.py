@@ -64,7 +64,7 @@ class PlanningResult(BaseModel):
 
     proposal: RecoveryProposal
     retrieval: RetrievalResult
-    planner_mode: Literal["gemini", "deterministic_fallback"]
+    planner_mode: Literal["gemini", "fallback_deterministic"]
     fallback_reason: Optional[str] = None
 
 
@@ -94,7 +94,7 @@ def _fallback_result(
     return PlanningResult(
         proposal=proposal,
         retrieval=evidence,
-        planner_mode="deterministic_fallback",
+        planner_mode="fallback_deterministic",
         fallback_reason=reason,
     )
 
@@ -284,7 +284,7 @@ async def propose_recovery_with_trace(
         collection=collection,
         gemini_client=gemini_client,
     )
-    used_fallback = result.planner_mode == "deterministic_fallback"
+    used_fallback = result.planner_mode == "fallback_deterministic"
     return {
         "proposal": result.proposal.model_dump(),
         "retrieval_mode": (

@@ -19,7 +19,7 @@ class RetrievalResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     procedure: RecoveryProcedure
-    retrieval_mode: Literal["atlas_vector", "deterministic_fallback"]
+    retrieval_mode: Literal["atlas_vector", "fallback_deterministic"]
     score: Optional[float] = Field(default=None, ge=0.0)
 
 
@@ -59,7 +59,7 @@ def retrieve_with_fallback(health: Mapping[str, object]) -> RetrievalResult:
 
     return RetrievalResult(
         procedure=get_fallback_procedure(health),
-        retrieval_mode="deterministic_fallback",
+        retrieval_mode="fallback_deterministic",
     )
 
 
