@@ -92,7 +92,7 @@ async def run(index_only: bool = False) -> Dict[str, Any]:
 
     load_dotenv()
     mongo_uri = os.getenv("MONGODB_URI")
-    database_name = os.getenv("MONGODB_DB", "ghostshift")
+    database_name = os.getenv("MONGODB_DB", "ghostshift_hackthon")
     index_name = os.getenv("VECTOR_INDEX_NAME", DEFAULT_VECTOR_INDEX)
     if not mongo_uri:
         raise RuntimeError("MONGODB_URI is required")

@@ -16,7 +16,7 @@ TEST_COLLECTIONS = ("agent_runs", "action_ledger", "policies", "audit_events")
 
 @pytest_asyncio.fixture
 async def test_db(monkeypatch):
-    """Point storage at the private test DB (never ghostshift_hackathon)."""
+    """Point storage at the private test DB (never ghostshift_hackthon)."""
     monkeypatch.setenv("MONGODB_DB", TEST_DB)
     await storage.close_client()  # fresh client bound to this test's event loop
     db = storage.get_db()

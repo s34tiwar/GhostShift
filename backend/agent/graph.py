@@ -220,7 +220,7 @@ async def _plan_recovery_from_environment(
     gemini = genai.Client(api_key=gemini_key)
     async_gemini = gemini.aio
     try:
-        database = mongo[os.getenv("MONGODB_DB", "ghostshift")]
+        database = mongo[os.getenv("MONGODB_DB", "ghostshift_hackthon")]
         return await plan_recovery(
             machine_health,
             collection=database["recovery_procedures"],
