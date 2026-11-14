@@ -1,1 +1,14 @@
+# Shared dependencies will be added here by each backend owner.
+google-genai>=1.0,<2
+pydantic>=2.10,<3
+pymongo>=4.9,<5
+python-dotenv>=1.0,<2
 # Python dependencies will be pinned here by the backend owners.
+pymongo>=4.9
+fastapi
+uvicorn
+httpx
+pydantic>=2
+python-dotenv
+pytest
+pytest-asyncio
