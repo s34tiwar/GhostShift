@@ -32,9 +32,11 @@ def utc_now() -> str:
 def get_client() -> AsyncMongoClient:
     global _client
     if _client is None:
-        uri = os.environ.get("MONGODB_URI")
+        uri = os.environ.get("BACKEND_MONGODB_URI") or os.environ.get("MONGODB_URI")
         if not uri:
-            raise RuntimeError("MONGODB_URI is not set")
+            raise RuntimeError(
+                "BACKEND_MONGODB_URI is not set (legacy MONGODB_URI is also accepted)"
+            )
         _client = AsyncMongoClient(uri)
     return _client
 

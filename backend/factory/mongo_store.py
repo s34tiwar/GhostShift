@@ -44,9 +44,15 @@ class FactoryStore:
     # ---------- construction ----------
     @classmethod
     def from_env(cls) -> "FactoryStore":
-        uri = os.environ.get("MONGODB_URI", "").strip()
+        uri = (
+            os.environ.get("BACKEND_MONGODB_URI")
+            or os.environ.get("MONGODB_URI", "")
+        ).strip()
         if not uri:
-            raise RuntimeError("MONGODB_URI is not set; the factory needs MongoDB to start.")
+            raise RuntimeError(
+                "BACKEND_MONGODB_URI is not set; the factory needs MongoDB to start "
+                "(legacy MONGODB_URI is also accepted)."
+            )
         db_name = os.environ.get("MONGODB_DB", "").strip() or "ghostshift"
         col_name = os.environ.get("FACTORY_COLLECTION", "").strip() or "factory_machines"
         client: MongoClient = MongoClient(uri, serverSelectionTimeoutMS=10_000, appname="ghostshift-factory")

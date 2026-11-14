@@ -188,7 +188,8 @@ async def test_crash_after_effect_then_resume_does_not_repeat(ready, monkeypatch
 
     def fake_crash():
         # crash_fired must already be durable in Atlas before the process dies
-        sync_client = MongoClient(os.environ["MONGODB_URI"])
+        uri = os.environ.get("BACKEND_MONGODB_URI") or os.environ["MONGODB_URI"]
+        sync_client = MongoClient(uri)
         try:
             doc = sync_client[os.environ["MONGODB_DB"]]["agent_runs"].find_one({"_id": run_id})
         finally:

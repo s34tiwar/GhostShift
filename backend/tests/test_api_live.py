@@ -1,6 +1,7 @@
 """API routes against a real MongoDB (private test DB). Owner: Enes.
 
-Skipped when MONGODB_URI is not set. Never touches the shared hackathon DB.
+Skipped when neither BACKEND_MONGODB_URI nor legacy MONGODB_URI is set.
+Never touches the shared hackathon DB.
 """
 import os
 
@@ -9,7 +10,10 @@ from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
 load_dotenv()
-pytestmark = pytest.mark.skipif(not os.environ.get("MONGODB_URI"), reason="MONGODB_URI not set")
+pytestmark = pytest.mark.skipif(
+    not (os.environ.get("BACKEND_MONGODB_URI") or os.environ.get("MONGODB_URI")),
+    reason="BACKEND_MONGODB_URI/MONGODB_URI not set",
+)
 
 TEST_DB = "ghostshift_test_enes"
 COLLECTIONS = ("agent_runs", "action_ledger", "audit_events", "policies")

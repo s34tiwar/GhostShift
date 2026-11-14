@@ -91,11 +91,13 @@ async def run(index_only: bool = False) -> Dict[str, Any]:
     """Run collection/index setup and optionally embed and seed procedures."""
 
     load_dotenv()
-    mongo_uri = os.getenv("MONGODB_URI")
+    mongo_uri = os.getenv("BACKEND_MONGODB_URI") or os.getenv("MONGODB_URI")
     database_name = os.getenv("MONGODB_DB", "ghostshift_hackthon")
     index_name = os.getenv("VECTOR_INDEX_NAME", DEFAULT_VECTOR_INDEX)
     if not mongo_uri:
-        raise RuntimeError("MONGODB_URI is required")
+        raise RuntimeError(
+            "BACKEND_MONGODB_URI is required (legacy MONGODB_URI is also accepted)"
+        )
 
     client = AsyncMongoClient(mongo_uri)
     try:
