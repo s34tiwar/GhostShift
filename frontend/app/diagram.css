@@ -44,16 +44,23 @@
 .activity-step { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; min-height: 72px; padding: 13px 17px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 16px; position: relative; }
 .activity-step:not(:last-child)::after { content: ""; position: absolute; left: 30px; top: calc(100% + 1px); height: 10px; border-left: 2px dotted #40584a; }
 .activity-step.done { border-color: #2d6542; background: #0d2115; }
-.activity-step.active { border-color: #bca65d; background: #221f12; }
+.activity-step.active { border: 2px solid var(--accent); background: linear-gradient(90deg, #3a3219, #201e13 70%); box-shadow: 0 0 0 3px rgba(255,236,158,.12), 0 0 24px rgba(255,236,158,.22); transform: translateX(6px); }
+.activity-step.active::before { content: ""; width: 4px; position: absolute; left: 0; top: 10px; bottom: 10px; border-radius: 4px; background: var(--accent); }
+.activity-step.blocked { border-color: var(--red); background: #271918; }
 .activity-marker { width: 26px; height: 26px; border: 1px solid #3a5142; border-radius: 50%; display: grid; place-items: center; color: #8ba194; font: 11px Arial, sans-serif; }
 .activity-step.done .activity-marker { background: var(--green); border-color: var(--green); color: #06160c; font-weight: 700; }
-.activity-step.active .activity-marker { border-color: var(--accent); color: var(--accent); }
+.activity-step.active .activity-marker { border-color: var(--accent); color: #10170f; background: var(--accent); font-weight: 700; animation: active-pulse 1.5s ease-in-out infinite; }
+.activity-step.blocked .activity-marker { border-color: var(--red); color: var(--red); }
+@keyframes active-pulse { 50% { box-shadow: 0 0 0 7px rgba(255,236,158,.17); } }
 .activity-step strong, .activity-step small { display: block; }
 .activity-step strong { font-size: 12px; font-weight: 600; line-height: 1.2; }
 .activity-step small { color: #879a8a; font-size: 10px; margin-top: 5px; line-height: 1.3; }
 .activity-state { color: #748679; font-size: 9px; text-transform: uppercase; letter-spacing: .12em; }
 .activity-step.done .activity-state { color: var(--green); }
-.activity-step.active .activity-state { color: var(--accent); }
+.activity-step.active .activity-state { color: #16150d; background: var(--accent); border-radius: 99px; padding: 7px 10px; font-weight: 700; }
+.activity-step.blocked .activity-state { color: var(--red); }
+.backend-error { border: 1px solid #954b43; background: #2d1a19; color: #ffaba4; padding: 12px 15px; margin-bottom: 18px; border-radius: 8px; font-size: 12px; }
+.machine-loading { min-height: 250px; display: grid; place-items: center; color: #a9b9ae; border: 1px dashed #405649; border-radius: 12px; }
 @media (max-width: 980px) { .machine-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .machine-card { padding: 15px; } .machine-card-top { flex-wrap: wrap; } }
 @media (max-width: 620px) { .hero { padding-top: 42px; } .site-header .mock-badge { display: inline-block; } .site-header .live { display: none; } .machine-grid { gap: 5px; } .machine-card { min-height: 205px; padding: 9px 7px 16px; border-radius: 10px 10px 6px 6px; } .machine-card h3 { font-size: 13px; } .machine-card .eyebrow { font-size: 7px; } .status-pill { padding: 4px 5px; font-size: 8px; } .rack-unit { min-height: 22px; padding: 4px; } .machine-rack { padding: 5px; gap: 5px; } .rack-vents { width: 60%; } .rack-light { width: 6px; height: 6px; } .machine-stats { display: block; padding-top: 8px; } .machine-stats div:not(:first-child) { display: none; } .machine-stats strong { font-size: 12px; } .machine-port { width: 16px; } .connection-lines { height: 100px; } .database-node { min-width: 0; padding: 10px 13px; } .factory-actions > span { flex-basis: 100%; text-align: center; } .factory-actions .button { min-width: 110px; } .activity-heading { align-items: start; } .activity-heading h2 { font-size: 28px; } .activity-step { grid-template-columns: 27px minmax(0, 1fr) auto; gap: 10px; padding: 12px; } .activity-step:not(:last-child)::after { left: 25px; } }
-@media (prefers-reduced-motion: reduce) { .connection-path { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .connection-path, .activity-step.active .activity-marker { animation: none; } }

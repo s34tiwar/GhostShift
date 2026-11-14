@@ -224,6 +224,14 @@ async def get_run(run_id: str) -> dict | None:
     ).model_dump()
 
 
+async def has_active_runs() -> bool:
+    """Prevent a demo reset while any worker may still be repairing a machine."""
+    return await storage.agent_runs().find_one(
+        {"status": {"$nin": ["COMPLETED", "FAILED", "DENIED"]}},
+        {"_id": 1},
+    ) is not None
+
+
 async def set_run_status(run_id: str, status: str, **fields) -> dict:
     doc = await storage.agent_runs().find_one_and_update(
         {"_id": run_id},
