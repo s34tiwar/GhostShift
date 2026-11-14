@@ -207,6 +207,8 @@ async def _execute_claimed(run_id, action, factory, owner) -> dict:
 async def _authorize_and_execute(run_id, action, factory, owner) -> dict:
     """PLANNED -> policy check -> AUTHORIZED -> atomic claim -> execute."""
     aid = action["action_id"]
+    # A finished or aborted run never gets a new execution (RunTerminalError).
+    await ledger.ensure_run_active(run_id)
     decision = await policies.authorize(run_id, aid, action["proposal"])
     if decision.allowed and action["action_type"] not in _TOOL_METHODS:
         decision.allowed = False
@@ -289,6 +291,9 @@ async def reconcile_action(action_id: str, factory=None, owner=None, retry: bool
     status = action["status"]
     if status in ("EFFECT_VERIFIED", "DENIED"):
         return action
+    # An unfinished action on a finished or aborted run is never verified, retried
+    # or re-executed by anything (RunTerminalError, before any factory call).
+    await ledger.ensure_run_active(run_id)
     if status == "PLANNED":  # crashed before authorization: nothing can have run
         return await _authorize_and_execute(run_id, action, factory, owner)
 

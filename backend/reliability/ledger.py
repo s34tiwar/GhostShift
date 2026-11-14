@@ -11,7 +11,13 @@ from api.schemas import RunView, make_operation_id, new_action_id
 from reliability import storage
 
 CRASH_STAGE = "after_effect_before_verify"
-TERMINAL_RUN_STATUSES = ("COMPLETED", "DENIED")  # resume_run is a no-op for these
+# A run in one of these never changes status again: resume_run is a no-op, the
+# worker never leases it, and nothing executes or reconciles its actions.
+TERMINAL_RUN_STATUSES = ("COMPLETED", "FAILED", "DENIED")
+
+
+class RunTerminalError(Exception):
+    """The run already finished (or was aborted); refuse to act on it."""
 
 
 def _dump(value):
@@ -234,8 +240,19 @@ async def has_active_runs() -> bool:
 
 
 async def set_run_status(run_id: str, status: str, **fields) -> dict:
+    """Move a run to `status`. A terminal run can never be moved to another status.
+
+    Raises RunTerminalError if the run is already terminal (e.g. aborted by a demo
+    reset while a worker was mid-pass), so a stale writer can never overwrite FAILED.
+    """
     doc = await storage.agent_runs().find_one_and_update(
-        {"_id": run_id},
+        {
+            "_id": run_id,
+            "$or": [
+                {"status": {"$nin": list(TERMINAL_RUN_STATUSES)}},
+                {"status": status},  # same-status rewrite is idempotent
+            ],
+        },
         {
             "$set": {**fields, "status": status, "updated_at": storage.utc_now()},
             "$inc": {"version": 1},
@@ -243,8 +260,20 @@ async def set_run_status(run_id: str, status: str, **fields) -> dict:
         return_document=ReturnDocument.AFTER,
     )
     if doc is None:
-        raise ValueError(f"run {run_id} does not exist")
+        current = await storage.agent_runs().find_one({"_id": run_id}, {"status": 1})
+        if current is None:
+            raise ValueError(f"run {run_id} does not exist")
+        raise RunTerminalError(f"run {run_id} is {current['status']}; refusing to set {status}")
     return doc
+
+
+async def ensure_run_active(run_id: str) -> None:
+    """Raise RunTerminalError if the run is terminal (ValueError if missing)."""
+    doc = await storage.agent_runs().find_one({"_id": run_id}, {"status": 1})
+    if doc is None:
+        raise ValueError(f"run {run_id} does not exist")
+    if doc["status"] in TERMINAL_RUN_STATUSES:
+        raise RunTerminalError(f"run {run_id} is {doc['status']}")
 
 
 async def arm_crash(run_id: str, stage: str) -> dict:
@@ -410,9 +439,14 @@ async def acquire_run_lease(owner: str, lease_seconds: float) -> dict | None:
 
 
 async def renew_lease(run_id: str, owner: str, lease_seconds: float) -> bool:
-    """Extend the lease only if this owner still holds it."""
+    """Extend the lease only if this owner still holds it AND the run is not terminal.
+
+    A run aborted under a live worker fails renewal even if its lease was left set,
+    so the worker's next checkpoint stops the pass.
+    """
     result = await storage.agent_runs().update_one(
-        {"_id": run_id, "lease_owner": owner},
+        {"_id": run_id, "lease_owner": owner,
+         "status": {"$nin": list(TERMINAL_RUN_STATUSES)}},
         {"$set": {"lease_expires_at": lease_time(lease_seconds)}},
     )
     return result.matched_count == 1

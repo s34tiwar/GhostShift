@@ -354,3 +354,94 @@ def test_unknown_scenario_is_rejected_by_schema_and_storage():
 
     with pytest.raises(ValueError):
         asyncio.run(bad())
+
+
+# --- runs aborted under a worker (e.g. a forced demo reset) ---------------------
+
+
+async def _simulate_abort(run_id, clear_lease=True):
+    """What a reset abort does to a run: FAILED and, normally, lease cleared."""
+    fields = {"status": "FAILED"}
+    if clear_lease:
+        fields.update(lease_owner=None, lease_expires_at=None)
+    await storage.agent_runs().update_one({"_id": run_id}, {"$set": fields})
+
+
+@pytest.mark.asyncio
+async def test_aborted_run_frees_the_machine(ready):
+    run_id = await storage.enqueue_run("machine_b")
+    await _simulate_abort(run_id)
+    assert await storage.enqueue_run("machine_b") != run_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clear_lease", [True, False])
+async def test_worker_holding_lease_cannot_write_back_after_abort(ready, clear_lease):
+    run_id = await storage.enqueue_run("machine_b")
+    assert (await ledger.acquire_run_lease("worker_a", worker.LEASE_SECONDS))["_id"] == run_id
+    await _simulate_abort(run_id, clear_lease=clear_lease)
+
+    # renewal fails whether or not the abort cleared the lease
+    assert await ledger.renew_lease(run_id, "worker_a", worker.LEASE_SECONDS) is False
+    for status in ("RUNNING", "COMPLETED", "NEEDS_RECONCILIATION"):
+        with pytest.raises(ledger.RunTerminalError):
+            await ledger.set_run_status(run_id, status)
+    assert (await _run(run_id))["status"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_in_flight_worker_stops_when_run_is_aborted(ready):
+    factory = FakeFactory()
+    run_id = await storage.enqueue_run("machine_b")
+    inner = stub_planner()
+
+    async def planner_then_abort(health):
+        outcome = await inner(health)
+        await _simulate_abort(run_id)  # reset lands while the worker is planning
+        return outcome
+
+    with pytest.raises((worker.LeaseLost, ledger.RunTerminalError)):
+        await worker.poll_once("worker_a", factory, planner_then_abort)
+    assert (await _run(run_id))["status"] == "FAILED"
+    assert factory.mutation_calls == []
+    assert [m for m, _ in factory.calls] == ["health"]  # only the worker's pre-plan read
+
+
+@pytest.mark.asyncio
+async def test_poll_never_picks_up_failed_and_resume_never_resumes_it(ready):
+    factory = FakeFactory()
+    run_id = await storage.enqueue_run("machine_b")
+    await _simulate_abort(run_id)
+    assert await worker.poll_once("w1", factory, stub_planner()) is None
+    assert await ledger.resume_run(run_id) == {"run_id": run_id, "status": "FAILED"}
+    run = await _run(run_id)
+    assert run["status"] == "FAILED" and run["restart_count"] == 0
+    assert await worker.poll_once("w1", factory, stub_planner()) is None
+    assert factory.calls == []
+
+
+@pytest.mark.asyncio
+async def test_executing_action_on_aborted_run_is_never_touched(ready):
+    factory = FakeFactory()
+    proposal = {"tool": "restart_sync", "machine_id": "machine_b",
+                "procedure_id": "proc_sync_restart", "rationale": "test"}
+    run_id = await storage.enqueue_run("machine_b")
+    await ledger.pin_fault_epoch(run_id, 1)
+    action = await ledger.create_action(run_id, proposal, 1)
+    await ledger.mark_authorized(action["action_id"], {"allowed": True, "policy_version": 1, "reason": "ok"})
+    assert await ledger.claim_action_atomically(action["action_id"], "worker_a")
+    old_events = await storage.audit_events().count_documents({"run_id": run_id})
+    await _simulate_abort(run_id)
+
+    with pytest.raises(ledger.RunTerminalError):
+        await executor.reconcile_run(run_id, factory=factory, owner="worker_b")
+    with pytest.raises(ledger.RunTerminalError):
+        await executor.reconcile_action(action["action_id"], factory=factory, owner="worker_b")
+    with pytest.raises(ledger.RunTerminalError):
+        await executor.execute_guarded_action(run_id, proposal, factory=factory, owner="worker_b")
+    assert await worker.poll_once("worker_b", factory, stub_planner()) is None
+
+    assert factory.calls == []  # no verify, no repair, not even a health read
+    doc = await ledger.get_action(action["action_id"])
+    assert doc["status"] == "EXECUTING" and doc["attempt_count"] == 1  # history kept as-is
+    assert await storage.audit_events().count_documents({"run_id": run_id}) == old_events
