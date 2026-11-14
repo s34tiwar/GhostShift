@@ -40,19 +40,66 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 from reliability import policies, storage  # noqa: E402
-from tests.fakes import TEST_COLLECTIONS, TEST_DB  # noqa: E402
+from tests.fakes import TEST_COLLECTIONS, TEST_DB_PREFIX  # noqa: E402
 
 
 # ---------------- Rhea: reliability fixtures ----------------
+def _drop_test_database(name: str) -> None:
+    """Drop this session's whole database; fall back to the four collections.
+
+    Uses a sync client (no event loop at session end). Never prints the URI.
+    """
+    import warnings
+
+    from pymongo import MongoClient
+    from pymongo.errors import OperationFailure
+
+    uri = os.environ.get("MONGODB_URI")
+    # Refuse to drop anything that is not a random per-session test database.
+    if not uri or not name.startswith(TEST_DB_PREFIX):
+        return
+    client = MongoClient(uri, serverSelectionTimeoutMS=8000)
+    try:
+        try:
+            client.drop_database(name)
+        except OperationFailure:  # Atlas user may lack dropDatabase
+            for collection in TEST_COLLECTIONS:
+                client[name].drop_collection(collection)
+    except Exception as exc:  # cleanup must never fail the run
+        warnings.warn(f"could not clean up test database {name}: {type(exc).__name__}")
+    finally:
+        client.close()
+
+
+@pytest.fixture(scope="session")
+def test_db_name():
+    """A random `ghostshift_test_<8 hex>` database for this pytest session only.
+
+    Two people (or two runs) on the same Atlas cluster never share data, so one
+    session's worker can never lease another session's runs.
+    """
+    name = f"{TEST_DB_PREFIX}{uuid.uuid4().hex[:8]}"
+    previous = os.environ.get("MONGODB_DB")
+    os.environ["MONGODB_DB"] = name
+    try:
+        yield name
+    finally:
+        _drop_test_database(name)
+        if previous is None:
+            os.environ.pop("MONGODB_DB", None)
+        else:
+            os.environ["MONGODB_DB"] = previous
+
+
 @pytest_asyncio.fixture
-async def test_db(monkeypatch):
-    """Point storage at the private test DB (never ghostshift_hackathon)."""
-    monkeypatch.setenv("MONGODB_DB", TEST_DB)
+async def test_db(test_db_name, monkeypatch):
+    """Point storage at this session's private database (never ghostshift_hackathon)."""
+    monkeypatch.setenv("MONGODB_DB", test_db_name)
     await storage.close_client()  # fresh client bound to this test's event loop
     db = storage.get_db()
-    assert db.name == TEST_DB
+    assert db.name == test_db_name and db.name.startswith(TEST_DB_PREFIX)
     yield db
-    for name in TEST_COLLECTIONS:
+    for name in TEST_COLLECTIONS:  # per-test isolation inside the session
         await db.drop_collection(name)
     await storage.close_client()
 

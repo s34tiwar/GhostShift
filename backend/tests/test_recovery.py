@@ -9,7 +9,7 @@ from pymongo.errors import DuplicateKeyError
 
 from api.schemas import MachineHealth
 from reliability import executor, ledger, policies, storage
-from tests.fakes import TEST_DB, FakeFactory, SimulatedCrash
+from tests.fakes import FakeFactory, SimulatedCrash
 
 
 # --- storage -----------------------------------------------------------------
@@ -190,7 +190,7 @@ async def test_crash_after_effect_then_resume_does_not_repeat(ready, monkeypatch
         # crash_fired must already be durable in Atlas before the process dies
         sync_client = MongoClient(os.environ["MONGODB_URI"])
         try:
-            doc = sync_client[TEST_DB]["agent_runs"].find_one({"_id": run_id})
+            doc = sync_client[os.environ["MONGODB_DB"]]["agent_runs"].find_one({"_id": run_id})
         finally:
             sync_client.close()
         assert doc["crash_fired"] is True
@@ -372,3 +372,11 @@ def test_machine_health_parses_factory_payload():
          if k not in ("restart_count", "reconnect_count", "message")}
     )
     assert (minimal.restart_count, minimal.reconnect_count, minimal.message) == (0, 0, None)
+
+
+def test_session_database_is_random_and_never_shared(test_db_name):
+    import re
+
+    assert re.fullmatch(r"ghostshift_test_[0-9a-f]{8}", test_db_name)
+    assert test_db_name not in ("ghostshift_test_rhea", "ghostshift_hackathon", "ghostshift")
+    assert os.environ["MONGODB_DB"] == test_db_name

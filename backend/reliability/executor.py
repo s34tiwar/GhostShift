@@ -103,8 +103,19 @@ def get_factory() -> FactoryClient:
 # --- crash injection ---------------------------------------------------------
 
 
+class CrashNotAllowedError(RuntimeError):
+    """_crash() was called outside a process that opted in to dying."""
+
+
+# Only worker.main() sets this, at boot. Anywhere else (API, scripts, an unpatched
+# test) the demo crash raises instead of killing the interpreter.
+REAL_CRASH = False
+
+
 def _crash() -> None:
     """Kill this worker process only. Tests patch this."""
+    if not REAL_CRASH:
+        raise CrashNotAllowedError("os._exit(42) is only allowed in the worker process")
     os._exit(42)
 
 
