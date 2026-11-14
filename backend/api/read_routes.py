@@ -7,10 +7,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import AuditResponse, LedgerEntry, RunView
+from api import factory_client
+from api.schemas import AuditResponse, LedgerEntry, MachineHealth, RunView
 from reliability import ledger
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/machines", response_model=list[MachineHealth])
+async def read_machines():
+    try:
+        return await factory_client.list_machines()
+    except factory_client.FactoryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except factory_client.FactoryResponseError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 async def _require_run(run_id: str) -> dict:

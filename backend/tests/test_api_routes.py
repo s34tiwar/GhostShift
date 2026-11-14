@@ -130,3 +130,51 @@ def test_resume_and_crash_arm(monkeypatch):
     assert client.post("/api/demo/crash-arm", json=body).json() == {"armed": True}
     assert client.post("/api/demo/crash-arm", json={**body, "run_id": "nope"}).status_code == 404
     assert client.post("/api/demo/crash-arm", json={**body, "stage": "bad"}).status_code == 422
+
+
+def test_factory_scenario_routes(monkeypatch):
+    machines = [
+        {
+            "machine_id": machine_id, "healthy": True, "fault_type": "NONE",
+            "sync_running": True, "network_connected": True, "backlog": 0,
+            "fault_epoch": 0, "last_operation_id": None,
+        }
+        for machine_id in ("machine_a", "machine_b", "machine_c")
+    ]
+    seen = []
+
+    async def list_machines():
+        return machines
+
+    async def break_sync(machine_id):
+        seen.append(machine_id)
+        return {**machines[1], "healthy": False, "fault_type": "SYNC_PROCESS_DOWN", "sync_running": False}
+
+    async def has_active_runs():
+        return False
+
+    async def reset():
+        return {"ok": True, "machines": machines}
+
+    monkeypatch.setattr(factory_client, "list_machines", list_machines)
+    monkeypatch.setattr(factory_client, "break_sync", break_sync)
+    monkeypatch.setattr(factory_client, "reset", reset)
+    monkeypatch.setattr(ledger, "has_active_runs", has_active_runs)
+
+    assert len(client.get("/api/machines").json()) == 3
+    response = client.post("/api/scenarios/sync_failure", json={"machine_id": "machine_b"})
+    assert response.status_code == 200
+    assert response.json()["healthy"] is False
+    assert seen == ["machine_b"]
+    assert client.post("/api/scenarios/sync_failure", json={"machine_id": "unknown"}).status_code == 422
+    assert client.post("/api/scenarios/reset", json={"confirm": False}).status_code == 422
+    assert client.post("/api/scenarios/reset", json={"confirm": True}).json()["ok"] is True
+
+
+def test_reset_rejects_active_run(monkeypatch):
+    async def has_active_runs():
+        return True
+
+    monkeypatch.setattr(ledger, "has_active_runs", has_active_runs)
+    response = client.post("/api/scenarios/reset", json={"confirm": True})
+    assert response.status_code == 409

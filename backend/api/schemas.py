@@ -57,6 +57,8 @@ class MachineHealth(BaseModel):
     backlog: int
     fault_epoch: int
     last_operation_id: str | None = None
+    restart_count: int = 0
+    reconnect_count: int = 0
 
 
 class RunView(BaseModel):

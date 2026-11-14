@@ -7,12 +7,44 @@ the separate worker picks the QUEUED run up.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Literal
 
 from api import factory_client
-from api.schemas import CrashArmRequest, RunCreateRequest, RunCreateResponse
+from api.schemas import CrashArmRequest, MachineHealth, MachineId, RunCreateRequest, RunCreateResponse
 from reliability import ledger, storage
 
 router = APIRouter(prefix="/api")
+
+
+class SyncFailureRequest(BaseModel):
+    machine_id: MachineId
+
+
+class ResetRequest(BaseModel):
+    confirm: Literal[True]
+
+
+@router.post("/scenarios/sync_failure", response_model=MachineHealth)
+async def sync_failure(body: SyncFailureRequest):
+    try:
+        return await factory_client.break_sync(body.machine_id)
+    except factory_client.FactoryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except factory_client.FactoryResponseError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/scenarios/reset")
+async def reset_scenario(body: ResetRequest):
+    try:
+        if await ledger.has_active_runs():
+            raise HTTPException(status_code=409, detail="a recovery run is still active")
+        return await factory_client.reset()
+    except factory_client.FactoryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except factory_client.FactoryResponseError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/runs", status_code=202, response_model=RunCreateResponse)
@@ -21,6 +53,8 @@ async def create_run(body: RunCreateRequest):
         health = await factory_client.get_health(body.machine_id)
     except factory_client.FactoryUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    except factory_client.FactoryResponseError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     if health.get("healthy") and health.get("fault_type", "NONE") == "NONE":
         raise HTTPException(status_code=409, detail=f"{body.machine_id} has no fault to recover")
     try:
