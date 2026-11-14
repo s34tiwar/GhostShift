@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from backend.agent.graph import (
     GEMINI_RESPONSE_SCHEMA,
     RecoveryProposal,
+    build_proposal_graph,
     plan_recovery,
     propose_recovery,
     propose_recovery_with_trace,
@@ -167,6 +168,12 @@ class ProposalTests(unittest.IsolatedAsyncioTestCase):
             {"tool", "machine_id", "procedure_id", "rationale"},
         )
         self.assertNotIn("additionalProperties", GEMINI_RESPONSE_SCHEMA)
+
+    def test_langgraph_stops_at_proposal_without_execution_nodes(self) -> None:
+        graph = build_proposal_graph(FakeCollection([]), FakeGemini())
+        node_names = set(graph.get_graph().nodes)
+        self.assertTrue({"inspect", "retrieve", "propose"} <= node_names)
+        self.assertFalse({"execute", "verify"} & node_names)
 
     async def test_planner_proposes_restart_for_sync_failure(self) -> None:
         proposal = (await plan_recovery(SYNC_FAILURE)).proposal

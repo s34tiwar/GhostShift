@@ -2,17 +2,19 @@
 
 import json
 import os
-from typing import Any, Literal, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional, TypedDict
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import AsyncMongoClient
 
 from .procedures import MachineId, RecoveryTool
 from .retrieval import (
     RetrievalResult,
+    format_query_text,
     retrieve_from_atlas,
     retrieve_with_fallback,
 )
@@ -66,6 +68,15 @@ class PlanningResult(BaseModel):
     fallback_reason: Optional[str] = None
 
 
+class ProposalGraphState(TypedDict, total=False):
+    """State carried only through Shivani's proposal-building graph."""
+
+    machine_health: dict[str, object]
+    query_text: str
+    retrieval: RetrievalResult
+    proposal: RecoveryProposal
+
+
 def _fallback_result(
     machine_health: Mapping[str, object], reason: str
 ) -> PlanningResult:
@@ -98,6 +109,72 @@ def _validate_against_evidence(
         raise ValueError("Gemini selected a tool not allowed by the procedure")
 
 
+async def _generate_proposal(
+    machine_health: Mapping[str, object],
+    evidence: RetrievalResult,
+    gemini_client: Any,
+) -> RecoveryProposal:
+    prompt = (
+        "Live machine health:\n"
+        f"{json.dumps(dict(machine_health), sort_keys=True)}\n\n"
+        "Retrieved recovery procedure:\n"
+        f"{evidence.procedure.model_dump_json(exclude={'embedding'})}"
+    )
+    response = await gemini_client.models.generate_content(
+        model=os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL),
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            response_mime_type="application/json",
+            response_schema=GEMINI_RESPONSE_SCHEMA,
+            temperature=0,
+        ),
+    )
+    parsed = response.parsed
+    if isinstance(parsed, RecoveryProposal):
+        proposal = parsed
+    elif parsed is not None:
+        proposal = RecoveryProposal.model_validate(parsed)
+    elif response.text:
+        proposal = RecoveryProposal.model_validate_json(response.text)
+    else:
+        raise ValueError("Gemini returned no structured proposal")
+
+    _validate_against_evidence(proposal, evidence)
+    if proposal.machine_id != machine_health.get("machine_id"):
+        raise ValueError("Gemini changed the target machine")
+    return proposal
+
+
+def build_proposal_graph(collection: Any, gemini_client: Any):
+    """Compile the proposal-only inspect -> retrieve -> propose workflow."""
+
+    async def inspect_node(state: ProposalGraphState) -> dict:
+        return {"query_text": format_query_text(state["machine_health"])}
+
+    async def retrieve_node(state: ProposalGraphState) -> dict:
+        evidence = await retrieve_from_atlas(
+            state["machine_health"], collection, gemini_client
+        )
+        return {"retrieval": evidence}
+
+    async def propose_node(state: ProposalGraphState) -> dict:
+        proposal = await _generate_proposal(
+            state["machine_health"], state["retrieval"], gemini_client
+        )
+        return {"proposal": proposal}
+
+    builder = StateGraph(ProposalGraphState)
+    builder.add_node("inspect", inspect_node)
+    builder.add_node("retrieve", retrieve_node)
+    builder.add_node("propose", propose_node)
+    builder.add_edge(START, "inspect")
+    builder.add_edge("inspect", "retrieve")
+    builder.add_edge("retrieve", "propose")
+    builder.add_edge("propose", END)
+    return builder.compile(name="ghostshift_proposal")
+
+
 async def plan_recovery(
     machine_health: Mapping[str, object],
     *,
@@ -112,38 +189,10 @@ async def plan_recovery(
         )
 
     try:
-        evidence = await retrieve_from_atlas(
-            machine_health, collection, gemini_client
-        )
-        prompt = (
-            "Live machine health:\n"
-            f"{json.dumps(dict(machine_health), sort_keys=True)}\n\n"
-            "Retrieved recovery procedure:\n"
-            f"{evidence.procedure.model_dump_json(exclude={'embedding'})}"
-        )
-        response = await gemini_client.models.generate_content(
-            model=os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL),
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                response_mime_type="application/json",
-                response_schema=GEMINI_RESPONSE_SCHEMA,
-                temperature=0,
-            ),
-        )
-        parsed = response.parsed
-        if isinstance(parsed, RecoveryProposal):
-            proposal = parsed
-        elif parsed is not None:
-            proposal = RecoveryProposal.model_validate(parsed)
-        elif response.text:
-            proposal = RecoveryProposal.model_validate_json(response.text)
-        else:
-            raise ValueError("Gemini returned no structured proposal")
-
-        _validate_against_evidence(proposal, evidence)
-        if proposal.machine_id != machine_health.get("machine_id"):
-            raise ValueError("Gemini changed the target machine")
+        graph = build_proposal_graph(collection, gemini_client)
+        state = await graph.ainvoke({"machine_health": dict(machine_health)})
+        evidence = state["retrieval"]
+        proposal = state["proposal"]
 
         return PlanningResult(
             proposal=proposal,
