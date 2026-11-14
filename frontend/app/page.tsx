@@ -204,7 +204,7 @@ export default function Home() {
     : faulted ? "Action required" : "All systems operational";
 
   return <main>
-    <header className="site-header"><a className="brand" href="#top"><span><GhostMark/></span>GhostShift</a><div className="header-meta"><span className="mock-badge">{hasBackend ? "Live backend" : "Mock backend"}</span><span className="live"><i/>{hasBackend ? "Polling live" : "Simulation running"}</span></div></header>
+    <header className="site-header"><a className="brand" href="#top"><span><GhostMark/></span>GhostShift</a><div className="header-meta"><span className="live"><i/>{hasBackend ? "Polling live" : "Simulation running"}</span></div></header>
     <div className="shell" id="top">
       <section className="hero"><div><p className="kicker"><span/> Factory recovery</p><h1>Keep the shift<br/><em>moving.</em></h1></div><aside className="hero-proof"><p>System state</p><strong>{statusText}</strong><div className="proof-row"><span><i/>{hasBackend ? machines.length : 3} machines</span><span>{hasBackend ? "Live API" : "Preview"}</span></div></aside></section>
       <section className="factory-section"><div className="section-heading"><div><p className="section-number">01 / FACTORY</p><h2>Machines</h2></div><span className="event-count"><i/>{hasBackend ? "Live state" : "Connection preview"}</span></div>
