@@ -177,6 +177,10 @@ export default function Home() {
   const activity = hasBackend ? liveSteps(targetMachine, run, audit, actions) : previewSteps(previewPhase, previewStep);
   const activeRun = hasBackend && run !== null && !["COMPLETED", "FAILED", "DENIED"].includes(run.status);
   const faulted = hasBackend ? Boolean(targetMachine && targetMachine.fault_type !== "NONE") : previewPhase === "faulted";
+  const recovered = hasBackend
+    ? Boolean(run?.status === "COMPLETED" && targetMachine?.healthy && actions.some((action) => action.status === "EFFECT_VERIFIED"))
+    : previewPhase === "complete";
+  const incidentState = recovered ? "recovered" : activeRun || previewPhase === "running" ? "recovering" : faulted ? "faulted" : "ready";
   const statusText = hasBackend && !loaded ? "Connecting to backend"
     : hasBackend && machines.length === 0 ? "Backend unavailable"
     : hasBackend && run?.status === "COMPLETED" && machines[1]?.status === "reconciled" ? "Recovery verified"
@@ -193,7 +197,16 @@ export default function Home() {
         {hasBackend && machines.length !== 3 ? <div className="machine-loading">{loaded ? "Waiting for backend" : "Loading machines"}</div> : <><FactoryCards machines={machines}/><ConnectionMap machines={machines}/></>}
         <div className="factory-actions" aria-label="Machine B controls"><span>Machine B</span><button className="button danger" onClick={stopSync} disabled={busy || Boolean(activeRun) || (hasBackend ? !targetMachine || targetMachine.fault_type !== "NONE" : previewPhase === "faulted" || previewPhase === "running")}>Stop sync</button><button className="button primary" onClick={runRecovery} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery</button><button className="reset-button" onClick={resetDemo} disabled={busy || Boolean(activeRun) || !hasBackend && previewPhase === "running"}>Reset</button></div>
       </section>
-      <BackendActivity states={activity} live={hasBackend} runStatus={run?.status}/>
+      <BackendActivity
+        states={activity}
+        live={hasBackend}
+        runStatus={run?.status}
+        incidentState={incidentState}
+        machine={targetMachine}
+        busy={busy}
+        onSimulateError={stopSync}
+        onRecover={runRecovery}
+      />
       <footer><span>GhostShift / Toronto 2026</span><span>Agents in context ↗</span></footer>
     </div>
   </main>;
