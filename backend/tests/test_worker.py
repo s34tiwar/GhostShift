@@ -248,7 +248,7 @@ async def test_planner_trace_fallback_is_labelled_honestly(ready, monkeypatch):
     run_id = await storage.enqueue_run("machine_b")
     assert await worker.poll_once("w1", FakeFactory(), planner) == run_id
     run = await _run(run_id)
-    assert run["planner_mode"] == "deterministic_fallback"  # never claims the model ran
+    assert run["planner_mode"] == "fallback_deterministic"  # never claims the model ran
     assert run["retrieval_mode"] == "fallback_deterministic"
     assert run["retrieval_score"] is None
 
@@ -264,6 +264,7 @@ async def test_planner_without_trace_function_keeps_plan_recovery_path(ready, mo
     assert await worker.poll_once("w1", FakeFactory(), planner) == run_id
     run = await _run(run_id)
     assert run["status"] == "COMPLETED"
-    assert run["retrieval_mode"] == "deterministic_fallback"  # her plan_recovery label
-    assert run["planner_mode"] == "deterministic_fallback"
+    # her plan_recovery says "deterministic_fallback"; the worker records one label
+    assert run["retrieval_mode"] == "fallback_deterministic"
+    assert run["planner_mode"] == "fallback_deterministic"
     assert run["retrieval_score"] is None

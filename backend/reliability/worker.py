@@ -33,6 +33,11 @@ _FALLBACK_PLAN = {
 LOCAL_FALLBACK_MODE = "fallback_deterministic"
 
 
+def _canonical_mode(mode):
+    """Record one fallback label everywhere, whichever spelling the planner used."""
+    return LOCAL_FALLBACK_MODE if mode == "deterministic_fallback" else mode
+
+
 def new_owner_id() -> str:
     return f"worker_{os.getpid()}_{uuid4().hex[:8]}"
 
@@ -150,7 +155,7 @@ def build_default_planner():
             return {
                 "proposal": trace.get("proposal"),
                 # Only a real vector hit means the model path ran.
-                "planner_mode": "gemini" if retrieval_mode == "atlas_vector" else "deterministic_fallback",
+                "planner_mode": "gemini" if retrieval_mode == "atlas_vector" else LOCAL_FALLBACK_MODE,
                 "retrieval_mode": retrieval_mode,
                 "score": trace.get("score"),
                 "fallback_reason": None,
@@ -158,8 +163,10 @@ def build_default_planner():
         result = await plan_recovery(health, collection=collection, gemini_client=gemini)
         return {
             "proposal": result.proposal.model_dump(),
-            "planner_mode": result.planner_mode,
-            "retrieval_mode": result.retrieval.retrieval_mode,
+            # Her plan_recovery labels its fallback "deterministic_fallback"; the
+            # recorded label is always "fallback_deterministic" (same as her trace).
+            "planner_mode": _canonical_mode(result.planner_mode),
+            "retrieval_mode": _canonical_mode(result.retrieval.retrieval_mode),
             "score": result.retrieval.score,
             "fallback_reason": result.fallback_reason,
         }

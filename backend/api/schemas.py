@@ -61,6 +61,7 @@ class MachineHealth(BaseModel):
     last_operation_id: str | None = None
     restart_count: int = 0
     reconnect_count: int = 0
+    message: str | None = None
 
 
 class RunView(BaseModel):

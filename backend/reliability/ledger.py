@@ -227,7 +227,7 @@ async def get_run(run_id: str) -> dict | None:
 async def has_active_runs() -> bool:
     """Prevent a demo reset while any worker may still be repairing a machine."""
     return await storage.agent_runs().find_one(
-        {"status": {"$nin": ["COMPLETED", "FAILED", "DENIED"]}},
+        {"status": {"$in": list(storage.ACTIVE_RUN_STATUSES)}},
         {"_id": 1},
     ) is not None
 
