@@ -39,20 +39,20 @@ NETWORK_FAILURE = {
 }
 
 
-class FakeEmbeddings:
+class FakeGeminiModels:
     def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
         self.dimensions = dimensions
         self.calls = []
 
-    async def create(self, **kwargs):
+    async def embed_content(self, **kwargs):
         self.calls.append(kwargs)
-        item = SimpleNamespace(embedding=[0.01] * self.dimensions)
-        return SimpleNamespace(data=[item])
+        item = SimpleNamespace(values=[0.01] * self.dimensions)
+        return SimpleNamespace(embeddings=[item])
 
 
-class FakeOpenAI:
+class FakeGemini:
     def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
-        self.embeddings = FakeEmbeddings(dimensions)
+        self.models = FakeGeminiModels(dimensions)
 
 
 class FakeCursor:
@@ -109,16 +109,17 @@ class RetrievalTests(unittest.TestCase):
 
 class AtlasRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_embedding_request_is_locked_to_1536_dimensions(self) -> None:
-        client = FakeOpenAI()
+        client = FakeGemini()
         embedding = await create_embedding("factory recovery", client)
         self.assertEqual(len(embedding), EMBEDDING_DIMENSIONS)
         self.assertEqual(
-            client.embeddings.calls[0]["dimensions"], EMBEDDING_DIMENSIONS
+            client.models.calls[0]["config"]["output_dimensionality"],
+            EMBEDDING_DIMENSIONS,
         )
 
     async def test_embedding_rejects_an_unexpected_dimension(self) -> None:
         with self.assertRaises(ValueError):
-            await create_embedding("factory recovery", FakeOpenAI(3))
+            await create_embedding("factory recovery", FakeGemini(3))
 
     async def test_atlas_result_is_filtered_and_labelled(self) -> None:
         document = SEED_PROCEDURES[0].model_dump(exclude={"embedding"})
@@ -126,7 +127,7 @@ class AtlasRetrievalTests(unittest.IsolatedAsyncioTestCase):
         collection = FakeCollection([document])
 
         result = await retrieve_from_atlas(
-            SYNC_FAILURE, collection, FakeOpenAI()
+            SYNC_FAILURE, collection, FakeGemini()
         )
 
         self.assertEqual(result.retrieval_mode, "atlas_vector")

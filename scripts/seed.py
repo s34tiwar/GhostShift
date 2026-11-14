@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from google import genai
 from pymongo import AsyncMongoClient
 from pymongo.operations import SearchIndexModel
 
@@ -66,12 +66,12 @@ async def ensure_vector_index(collection: Any, index_name: str) -> str:
     )
 
 
-async def seed_procedures(collection: Any, openai_client: Any) -> int:
+async def seed_procedures(collection: Any, gemini_client: Any) -> int:
     """Generate embeddings and idempotently upsert the two seed runbooks."""
 
     for procedure in SEED_PROCEDURES:
         embedding = await create_embedding(
-            format_procedure_text(procedure), openai_client
+            format_procedure_text(procedure), gemini_client
         )
         document: Dict[str, Any] = procedure.model_dump(exclude_none=True)
         document["embedding"] = embedding
@@ -104,11 +104,17 @@ async def run(index_only: bool = False) -> Dict[str, Any]:
         index_status = await ensure_vector_index(collection, index_name)
         seeded = 0
         if not index_only:
-            if not os.getenv("OPENAI_API_KEY"):
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_api_key:
                 raise RuntimeError(
-                    "OPENAI_API_KEY is required to embed and seed procedures"
+                    "GEMINI_API_KEY is required to embed and seed procedures"
                 )
-            seeded = await seed_procedures(collection, AsyncOpenAI())
+            gemini = genai.Client(api_key=gemini_api_key)
+            async_gemini = gemini.aio
+            try:
+                seeded = await seed_procedures(collection, async_gemini)
+            finally:
+                await async_gemini.aclose()
         return {
             "database": database_name,
             "collection": COLLECTION_NAME,

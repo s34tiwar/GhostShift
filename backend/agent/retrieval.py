@@ -1,4 +1,4 @@
-"""OpenAI embeddings, Atlas Vector Search, and explicit fallback retrieval."""
+"""Gemini embeddings, Atlas Vector Search, and explicit fallback retrieval."""
 
 import os
 from typing import Any, List, Literal, Mapping, Optional
@@ -9,7 +9,7 @@ from .procedures import RecoveryProcedure, get_fallback_procedure
 
 
 EMBEDDING_DIMENSIONS = 1536
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 DEFAULT_VECTOR_INDEX = "recovery_vector_index"
 
 
@@ -65,25 +65,24 @@ def retrieve_with_fallback(health: Mapping[str, object]) -> RetrievalResult:
 
 async def create_embedding(
     text: str,
-    openai_client: Any,
+    gemini_client: Any,
     *,
     model: Optional[str] = None,
 ) -> List[float]:
-    """Create and validate one 1536-dimensional OpenAI embedding."""
+    """Create and validate one 1536-dimensional Gemini embedding."""
 
     if not text.strip():
         raise ValueError("Embedding input cannot be empty")
 
-    response = await openai_client.embeddings.create(
+    response = await gemini_client.models.embed_content(
         model=model or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-        input=text,
-        encoding_format="float",
-        dimensions=EMBEDDING_DIMENSIONS,
+        contents=text,
+        config={"output_dimensionality": EMBEDDING_DIMENSIONS},
     )
-    if len(response.data) != 1:
+    if not response.embeddings or len(response.embeddings) != 1:
         raise ValueError("Expected exactly one embedding result")
 
-    embedding = list(response.data[0].embedding)
+    embedding = list(response.embeddings[0].values)
     if len(embedding) != EMBEDDING_DIMENSIONS:
         raise ValueError(
             f"Expected {EMBEDDING_DIMENSIONS} embedding dimensions, "
@@ -95,14 +94,14 @@ async def create_embedding(
 async def retrieve_from_atlas(
     health: Mapping[str, object],
     collection: Any,
-    openai_client: Any,
+    gemini_client: Any,
     *,
     index_name: Optional[str] = None,
 ) -> RetrievalResult:
     """Retrieve and validate the best compatible procedure from Atlas."""
 
     query_embedding = await create_embedding(
-        format_query_text(health), openai_client
+        format_query_text(health), gemini_client
     )
     pipeline = [
         {
