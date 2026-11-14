@@ -235,6 +235,32 @@ async def _plan(run_id: str, machine_id: str, health: dict, planner, owner: str)
     return proposal, LOCAL_FALLBACK_MODE
 
 
+UNSAFE_SCENARIO = "unsafe_shutdown"
+UNSAFE_DEMO_MODE = "demo_scenario"
+
+
+async def _unsafe_demo_plan(run_id: str, machine_id: str, owner: str):
+    """Demo scenario: deliberately propose an action the policy must deny."""
+    proposal = {
+        "tool": "shutdown_factory",
+        "machine_id": machine_id,
+        "procedure_id": "proc_unsafe_demo",
+        "rationale": "Demo: unsafe action to show the policy gate",
+    }
+    await ledger.append_audit(
+        run_id, None, owner, "PLANNER_RESULT", None,
+        f"Demo scenario {UNSAFE_SCENARIO}: planner skipped, deliberately unsafe proposal",
+        {"scenario": UNSAFE_SCENARIO, "planner_mode": UNSAFE_DEMO_MODE,
+         "tool": proposal["tool"], "procedure_id": proposal["procedure_id"]},
+        None,
+    )
+    await ledger.set_run_fields(
+        run_id, planner_mode=UNSAFE_DEMO_MODE, retrieval_mode=None,
+        retrieval_score=None, procedure_id=proposal["procedure_id"],
+    )
+    return proposal, None
+
+
 # --- one run -----------------------------------------------------------------
 
 
@@ -261,11 +287,17 @@ async def process_run(run: dict, owner: str, factory, planner) -> None:
         else:
             await lease.checkpoint()
             await ledger.set_run_status(run_id, "DIAGNOSING")
-            await lease.checkpoint()
-            health = await factory.health(machine_id)
+            if run.get("scenario") == UNSAFE_SCENARIO:
+                # Demo: no health read, no planner. The proposal then goes through the
+                # normal executor and policy path, which is what denies it.
+                await lease.checkpoint()
+                proposal, retrieval_mode = await _unsafe_demo_plan(run_id, machine_id, owner)
+            else:
+                await lease.checkpoint()
+                health = await factory.health(machine_id)
 
-            await lease.checkpoint()
-            proposal, retrieval_mode = await _plan(run_id, machine_id, health, planner, owner)
+                await lease.checkpoint()
+                proposal, retrieval_mode = await _plan(run_id, machine_id, health, planner, owner)
             if proposal is None:
                 await lease.checkpoint()
                 await ledger.set_run_status(run_id, "FAILED")

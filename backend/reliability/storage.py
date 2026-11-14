@@ -95,8 +95,15 @@ async def init_indexes() -> None:
     )
 
 
-async def enqueue_run(machine_id: str, crash_armed: bool = False) -> str:
+KNOWN_SCENARIOS = (None, "unsafe_shutdown")
+
+
+async def enqueue_run(
+    machine_id: str, crash_armed: bool = False, scenario: str | None = None
+) -> str:
     """Insert a QUEUED run and return its run_id."""
+    if scenario not in KNOWN_SCENARIOS:
+        raise ValueError(f"unknown scenario: {scenario!r}")
     existing = await agent_runs().find_one(
         {"machine_id": machine_id, "status": {"$in": list(ACTIVE_RUN_STATUSES)}},
         {"_id": 1},
@@ -117,6 +124,7 @@ async def enqueue_run(machine_id: str, crash_armed: bool = False) -> str:
             "last_verified_step": None,
             "crash_armed": crash_armed,
             "crash_fired": False,
+            "scenario": scenario,
             "restart_count": 0,
             "lease_owner": None,
             "lease_expires_at": None,
