@@ -472,3 +472,97 @@ async def test_missing_recovery_attempts_means_zero(test_db):
     doc = await storage.agent_runs().find_one({"_id": run_id})
     assert "recovery_attempts" not in doc
     assert (await ledger.get_run(run_id))["recovery_count"] == 0
+
+
+# --- abort_active_runs (forced demo reset) -------------------------------------
+
+
+async def _abort_events(run_id=None):
+    query = {"event_type": "RUN_ABORTED_BY_RESET"}
+    if run_id:
+        query["run_id"] = run_id
+    return await storage.audit_events().count_documents(query)
+
+
+@pytest.mark.asyncio
+async def test_abort_returns_empty_when_nothing_is_active(test_db):
+    assert await ledger.abort_active_runs("demo reset") == []
+    assert await _abort_events() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", storage.ACTIVE_RUN_STATUSES)
+async def test_abort_fails_a_run_in_each_active_status(test_db, status):
+    run_id = await storage.enqueue_run("machine_b")
+    await storage.agent_runs().update_one(
+        {"_id": run_id},
+        {"$set": {"status": status, "lease_owner": "worker_a",
+                  "lease_expires_at": ledger.lease_time(30)}},
+    )
+    assert await ledger.abort_active_runs("demo reset") == [run_id]
+    doc = await storage.agent_runs().find_one({"_id": run_id})
+    assert doc["status"] == "FAILED"
+    assert doc["lease_owner"] is None and doc["lease_expires_at"] is None
+    assert doc["abort_reason"] == "demo reset"
+    event = await storage.audit_events().find_one({"run_id": run_id, "event_type": "RUN_ABORTED_BY_RESET"})
+    assert event["reason"] == "demo reset" and event["detail"]["previous_status"] == status
+
+
+@pytest.mark.asyncio
+async def test_abort_skips_terminal_runs(test_db):
+    finished = {}
+    for status in ("COMPLETED", "FAILED", "DENIED"):
+        run_id = await storage.enqueue_run("machine_b")
+        await storage.agent_runs().update_one({"_id": run_id}, {"$set": {"status": status}})
+        finished[run_id] = status
+    assert await ledger.abort_active_runs("demo reset") == []
+    for run_id, status in finished.items():
+        doc = await storage.agent_runs().find_one({"_id": run_id})
+        assert doc["status"] == status and "abort_reason" not in doc
+    assert await _abort_events() == 0
+
+
+@pytest.mark.asyncio
+async def test_abort_writes_one_event_per_run_and_nothing_on_second_call(test_db):
+    a = await storage.enqueue_run("machine_a")
+    b = await storage.enqueue_run("machine_b")
+    assert sorted(await ledger.abort_active_runs("demo reset")) == sorted([a, b])
+    assert await ledger.abort_active_runs("demo reset") == []
+    assert await _abort_events(a) == 1 and await _abort_events(b) == 1
+    # concurrent callers still abort each run once
+    c = await storage.enqueue_run("machine_c")
+    results = await asyncio.gather(*(ledger.abort_active_runs("demo reset") for _ in range(3)))
+    assert sorted(r for result in results for r in result) == [c]
+    assert await _abort_events(c) == 1
+
+
+@pytest.mark.asyncio
+async def test_abort_frees_the_machine_and_keeps_history(test_db):
+    await policies.seed_default_policy()
+    run_id = await storage.enqueue_run("machine_b")
+    action = await ledger.create_action(run_id, PROPOSAL, 1)
+    await policies.authorize(run_id, action["action_id"], PROPOSAL)  # writes a POLICY_CHECK event
+    await ledger.mark_authorized(action["action_id"], {"allowed": True, "policy_version": 1, "reason": "ok"})
+    assert await ledger.claim_action_atomically(action["action_id"], "worker_a")
+    events_before = await storage.audit_events().count_documents({"run_id": run_id})
+    actions_before = await storage.action_ledger().count_documents({})
+
+    assert await ledger.abort_active_runs("demo reset") == [run_id]
+
+    doc = await ledger.get_action(action["action_id"])
+    assert doc["status"] == "EXECUTING" and doc["attempt_count"] == 1  # untouched
+    assert await storage.action_ledger().count_documents({}) == actions_before
+    assert await storage.audit_events().count_documents({"run_id": run_id}) == events_before + 1
+    assert await storage.enqueue_run("machine_b") != run_id  # machine is free again
+
+
+@pytest.mark.asyncio
+async def test_worker_lease_on_aborted_run_cannot_renew_or_write(test_db):
+    run_id = await storage.enqueue_run("machine_b")
+    assert (await ledger.acquire_run_lease("worker_a", 10))["_id"] == run_id
+    await ledger.set_run_status(run_id, "RUNNING")
+    assert await ledger.abort_active_runs("demo reset") == [run_id]
+    assert await ledger.renew_lease(run_id, "worker_a", 10) is False
+    with pytest.raises(ledger.RunTerminalError):
+        await ledger.set_run_status(run_id, "COMPLETED")
+    assert (await storage.agent_runs().find_one({"_id": run_id}))["status"] == "FAILED"

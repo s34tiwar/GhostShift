@@ -239,6 +239,51 @@ async def has_active_runs() -> bool:
     ) is not None
 
 
+ABORT_EVENT = "RUN_ABORTED_BY_RESET"
+
+
+async def abort_active_runs(reason: str) -> list[str]:
+    """Fail every active run (forced demo reset). Returns the run_ids actually aborted.
+
+    Each run is flipped by one atomic find_one_and_update filtered on an active
+    status, so concurrent or repeated calls abort a run at most once, and exactly
+    one RUN_ABORTED_BY_RESET audit event is written per aborted run. Leases are
+    cleared so a live worker fails its next renewal and stops. Nothing is deleted:
+    ledger actions (EXECUTING ones included) and earlier audit events stay as they
+    are, and no factory call is made.
+    """
+    active = list(storage.ACTIVE_RUN_STATUSES)
+    candidates = storage.agent_runs().find({"status": {"$in": active}}, {"_id": 1})
+    run_ids = [doc["_id"] async for doc in candidates]
+
+    aborted: list[str] = []
+    for run_id in run_ids:
+        now = storage.utc_now()
+        before = await storage.agent_runs().find_one_and_update(
+            {"_id": run_id, "status": {"$in": active}},
+            {
+                "$set": {
+                    "status": "FAILED",
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "abort_reason": reason,
+                    "aborted_at": now,
+                    "updated_at": now,
+                },
+                "$inc": {"version": 1},
+            },
+            return_document=ReturnDocument.BEFORE,
+        )
+        if before is None:  # finished, or aborted by someone else, in the meantime
+            continue
+        await append_audit(
+            run_id, before.get("current_action_id"), "demo_reset", ABORT_EVENT, None,
+            reason, {"previous_status": before["status"]}, None,
+        )
+        aborted.append(run_id)
+    return aborted
+
+
 async def set_run_status(run_id: str, status: str, **fields) -> dict:
     """Move a run to `status`. A terminal run can never be moved to another status.
 
