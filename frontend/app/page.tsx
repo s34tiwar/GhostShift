@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import BackendActivity from "@/components/BackendActivity";
 import ConnectionMap from "@/components/ConnectionMap";
 import FactoryCards from "@/components/FactoryCards";
 import { ApiError, api, hasBackend } from "@/lib/api";
-import { liveSteps, previewSteps, toDisplayMachines, type PreviewPhase } from "@/lib/activity";
+import { isTerminal, liveSteps, previewSteps, stoppedReason, toDisplayMachines, type PreviewPhase } from "@/lib/activity";
 import type { AuditEvent, FactoryMachine, LedgerEntry, Machine, RunView } from "@/lib/types";
 
 const target = "machine_b" as const;
@@ -32,6 +32,9 @@ export default function Home() {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Run id whose terminal state has been fetched twice in a row (so trailing audit
+  // events, e.g. RUN_ABORTED_BY_RESET, are in); its run/audit/actions stop polling.
+  const terminalSeen = useRef<{ runId: string; count: number } | null>(null);
 
   useEffect(() => {
     if (!hasBackend) return;
@@ -79,24 +82,41 @@ export default function Home() {
       if (polling) return;
       polling = true;
       try {
-        const [machines, snapshot] = await Promise.all([
+        const settled = runId !== null && terminalSeen.current?.runId === runId && terminalSeen.current.count >= 2;
+        // allSettled: a failing run call never stops the machines from refreshing.
+        const [machinesResult, snapshotResult] = await Promise.allSettled([
           api.machines(),
-          runId ? Promise.all([api.run(runId), api.audit(runId), api.actions(runId)]) : Promise.resolve(null),
+          runId && !settled ? Promise.all([api.run(runId), api.audit(runId), api.actions(runId)]) : Promise.resolve(null),
         ]);
         if (cancelled) return;
-        setFactoryMachines(machines);
-        if (snapshot) {
-          setRun(snapshot[0]);
-          setAudit(snapshot[1].events);
-          setActions(snapshot[2]);
+        const problems: string[] = [];
+        if (machinesResult.status === "fulfilled") setFactoryMachines(machinesResult.value);
+        else problems.push(machinesResult.reason instanceof Error ? machinesResult.reason.message : "Backend unavailable");
+
+        if (snapshotResult.status === "fulfilled" && snapshotResult.value && runId) {
+          const [nextRun, nextAudit, nextActions] = snapshotResult.value;
+          setRun(nextRun);
+          setAudit(nextAudit.events);
+          setActions(nextActions);
+          if (isTerminal(nextRun.status)) {
+            const seen = terminalSeen.current;
+            terminalSeen.current = { runId, count: seen?.runId === runId ? seen.count + 1 : 1 };
+          }
+        } else if (snapshotResult.status === "rejected") {
+          const cause = snapshotResult.reason;
+          if (cause instanceof ApiError && cause.status === 404) {
+            // The stored run no longer exists (e.g. another database): forget it.
+            window.localStorage.removeItem(runKey);
+            setRunId(null);
+            setRun(null);
+            setAudit([]);
+            setActions([]);
+          } else {
+            problems.push(cause instanceof Error ? cause.message : "Run unavailable");
+          }
         }
-        setError(null);
+        setError(problems.length ? problems.join(" · ") : null);
         setLoaded(true);
-      } catch (cause) {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : "Backend unavailable");
-          setLoaded(true);
-        }
       } finally {
         polling = false;
       }
@@ -199,6 +219,8 @@ export default function Home() {
   const statusText = hasBackend && !loaded ? "Connecting to backend"
     : hasBackend && machines.length === 0 ? "Backend unavailable"
     : hasBackend && run?.status === "COMPLETED" && machines[1]?.status === "reconciled" ? "Recovery verified"
+    : hasBackend && run?.status === "DENIED" ? "Unsafe action blocked"
+    : hasBackend && run && stoppedReason(audit) === "aborted" ? "Aborted by reset"
     : hasBackend && run && ["FAILED", "DENIED", "COMPLETED"].includes(run.status) ? "Review required"
     : activeRun || previewPhase === "running" && !hasBackend ? "Recovery in progress"
     : faulted ? "Action required" : "All systems operational";
@@ -226,6 +248,8 @@ export default function Home() {
         runStatus={run?.status}
         incidentState={incidentState}
         machine={targetMachine}
+        audit={audit}
+        actions={actions}
       />
       <footer><span>GhostShift / Toronto 2026</span><span>Agents in context ↗</span></footer>
     </div>

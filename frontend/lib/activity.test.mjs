@@ -51,3 +51,29 @@ test("reconciliation focuses verification after a receipt", () => {
   assert.equal(states[5], "active");
   assert.equal(states.filter((state) => state === "active").length, 1);
 });
+
+const healthy = { ...machine, healthy: true, fault_type: "NONE", sync_running: true };
+
+test("a denied or failed run on a healthy machine shows the machine as synced", () => {
+  for (const status of ["DENIED", "FAILED"]) {
+    const display = toDisplayMachines([healthy], { ...run, status }, [{ action_id: "act_1", status: "DENIED" }]);
+    assert.equal(display[0].status, "healthy", status);
+  }
+});
+
+test("a crash after the effect shows repair applied and verification waiting", () => {
+  const states = liveSteps(healthy, { ...run, status: "RUNNING", procedure_id: "proc_sync_restart" },
+    [{ at: "1", actor: "w", event_type: "EXECUTION_STARTED" }, { at: "2", actor: "executor", event_type: "CRASH_INJECTED" }],
+    [{ action_id: "act_1", status: "EXECUTING", policy_decision: { allowed: true }, external_receipt: { applied: true } }]);
+  assert.equal(states[4], "done");
+  assert.equal(states[5], "active");
+});
+
+test("an aborted or crash-looped run blocks no pipeline step", () => {
+  for (const event_type of ["RUN_ABORTED_BY_RESET", "RECOVERY_ATTEMPTS_EXCEEDED"]) {
+    const states = liveSteps(machine, { ...run, status: "FAILED", procedure_id: "proc_sync_restart" },
+      [{ at: "1", actor: "demo_reset", event_type }], []);
+    assert.ok(!states.includes("blocked"), event_type);
+    assert.ok(!states.includes("active"), event_type);
+  }
+});

@@ -10,6 +10,22 @@ export class ApiError extends Error {
   }
 }
 
+/** Turn a FastAPI `detail` (string, 422 array, or object) into readable text. */
+export function detailMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => (item && typeof item === "object" && typeof (item as { msg?: unknown }).msg === "string" ? (item as { msg: string }).msg : null))
+      .filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join("; ") : fallback;
+  }
+  if (detail && typeof detail === "object") {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
@@ -20,7 +36,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let message = `Request failed (${response.status})`;
     try {
       const body = await response.json();
-      message = body.detail ?? message;
+      message = detailMessage(body?.detail, message);
     } catch { /* Keep the status message for non-JSON errors. */ }
     throw new ApiError(message, response.status);
   }
