@@ -44,9 +44,7 @@ Browser ── Next.js (frontend/)
         lease owner + expiry; controlled crash and takeover
 ```
 
-- The API and the worker are **separate processes**. The worker is never a FastAPI background task.
-- The API never reads Mongo directly for runs: it calls the `reliability` module (`get_run`, `list_audit`, `get_machine_ledger`, `enqueue_run`, `resume_run`, `arm_crash`).
-- Factory state lives in MongoDB (not SQLite), in its own collection.
+The API and the worker are separate processes. Factory state lives in MongoDB, in its own collection.
 
 ### Invariants the system keeps
 
@@ -55,18 +53,6 @@ Browser ── Next.js (frontend/)
 3. The same `operation_id` is reused on retry, and the factory replays the saved receipt instead of repairing twice.
 4. External verification happens before `EFFECT_VERIFIED`.
 5. Resume never reruns a successful effect. Ambiguous state becomes `REQUIRES_REVIEW`, never a blind repeat.
-
-## Repo layout
-
-```
-frontend/            Next.js control center (App Router, TypeScript)
-backend/api/         FastAPI routes: read_routes, scenario_routes, factory_client, schemas
-backend/factory/     Factory simulator (see backend/factory/README.md)
-backend/reliability/ storage, ledger, policies, executor, worker
-backend/agent/       LangGraph planner, retrieval, seed procedures
-backend/tests/       pytest suites
-scripts/             seed.py (vector index + procedures), demo_reset.py
-```
 
 ## Run it locally
 
@@ -129,8 +115,6 @@ Base URL is `NEXT_PUBLIC_API_BASE_URL`. Schemas are in `backend/api/schemas.py`.
 | POST | `/api/runs/{id}/resume` | Moves an unfinished run to `NEEDS_RECONCILIATION`. Same `run_id`. No-op for finished runs |
 | POST | `/api/demo/crash-arm` | `{run_id, stage:"after_effect_before_verify"}`, one-shot per run |
 
-Run statuses: `QUEUED`, `CREATED`, `DIAGNOSING`, `ACTION_PENDING`, `RUNNING`, `NEEDS_RECONCILIATION`, `COMPLETED`, `FAILED`, `DENIED`.
-Action statuses: `PLANNED`, `AUTHORIZED`, `EXECUTING`, `EFFECT_VERIFIED`, `DENIED`, `FAILED`, `REQUIRES_REVIEW`.
 
 ## Configuration
 
@@ -154,7 +138,7 @@ No secrets belong in the repo or in any `NEXT_PUBLIC_` variable.
 cd backend && python -m pytest tests -q
 ```
 
-Tests that need MongoDB skip themselves when the connection is not configured: set `BACKEND_MONGODB_URI` (or `MONGODB_URI`) for the API live tests, and `TEST_MONGODB_URI` for the factory tests. They use throwaway databases and collections and clean up after themselves.
+Tests that need MongoDB skip themselves when the connection is not configured: set `BACKEND_MONGODB_URI` for the API live tests and `TEST_MONGODB_URI` for the factory tests.
 
 ## Technologies
 
