@@ -1,7 +1,7 @@
 """Durable run, action-ledger, and audit transitions. Owner: Rhea."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from pymongo import ASCENDING, ReturnDocument
@@ -279,3 +279,148 @@ async def resume_run(run_id: str) -> dict:
             raise ValueError(f"run {run_id} does not exist")
         return {"run_id": run_id, "status": current["status"]}
     return {"run_id": run_id, "status": "NEEDS_RECONCILIATION"}
+
+
+# --- executor helpers --------------------------------------------------------
+
+
+async def reclaim_stale_action(action_id: str, owner: str) -> bool:
+    """Take over an action for one same-key retry. True only for the winner.
+
+    Matches an EXECUTING action claimed by a different owner (its worker died),
+    or an AUTHORIZED action that was never claimed.
+    """
+    doc = await storage.action_ledger().find_one_and_update(
+        {
+            "action_id": action_id,
+            "$or": [
+                {"status": "EXECUTING", "claimed_by": {"$ne": owner}},
+                {"status": "AUTHORIZED"},
+            ],
+        },
+        [
+            {
+                "$set": {
+                    "status": "EXECUTING",
+                    "claimed_by": owner,
+                    "started_at": {"$ifNull": ["$started_at", storage.utc_now()]},
+                    "attempt_count": {"$add": ["$attempt_count", 1]},
+                }
+            }
+        ],
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc is not None
+
+
+async def save_receipt(action_id: str, receipt: dict) -> None:
+    """Record the factory's receipt. Does not change status: a receipt is not proof."""
+    await storage.action_ledger().update_one(
+        {"action_id": action_id, "status": "EXECUTING"},
+        {"$set": {"external_receipt": receipt}},
+    )
+
+
+async def fire_crash_once(run_id: str) -> bool:
+    """Atomically flip crash_fired. True for exactly one caller per armed run."""
+    doc = await storage.agent_runs().find_one_and_update(
+        {"_id": run_id, "crash_armed": True, "crash_fired": False},
+        {"$set": {"crash_fired": True, "updated_at": storage.utc_now()}},
+    )
+    return doc is not None
+
+
+async def get_fault_epoch(run_id: str) -> int | None:
+    """The fault epoch pinned on the run, or None if not pinned yet."""
+    doc = await storage.agent_runs().find_one({"_id": run_id}, {"fault_epoch": 1})
+    if doc is None:
+        raise ValueError(f"run {run_id} does not exist")
+    return doc.get("fault_epoch")
+
+
+async def set_run_fields(run_id: str, **fields) -> None:
+    """Set fields on a run without changing its status."""
+    await storage.agent_runs().update_one(
+        {"_id": run_id},
+        {"$set": {**fields, "updated_at": storage.utc_now()}, "$inc": {"version": 1}},
+    )
+
+
+# --- run leases (worker) -------------------------------------------------------
+
+LEASABLE_RUN_STATUSES = (
+    "QUEUED",
+    "NEEDS_RECONCILIATION",
+    "DIAGNOSING",
+    "ACTION_PENDING",
+    "RUNNING",
+)
+
+
+def lease_time(offset_seconds: float = 0.0) -> str:
+    """Fixed-width UTC ISO-8601 (always microseconds) so string order == time order."""
+    moment = datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
+    return moment.isoformat(timespec="microseconds")
+
+
+async def acquire_run_lease(owner: str, lease_seconds: float) -> dict | None:
+    """Atomically lease the oldest eligible run. None if nothing is available.
+
+    Eligible: a non-terminal status and no live lease (owner unset or expired).
+    recovery_attempts counts every pickup after the first one.
+    """
+    now = lease_time()
+    return await storage.agent_runs().find_one_and_update(
+        {
+            "status": {"$in": list(LEASABLE_RUN_STATUSES)},
+            "$or": [
+                {"lease_owner": None},
+                {"lease_expires_at": None},
+                {"lease_expires_at": {"$lt": now}},
+            ],
+        },
+        [
+            {
+                "$set": {
+                    "recovery_attempts": {
+                        "$add": [
+                            {"$ifNull": ["$recovery_attempts", 0]},
+                            {"$cond": [{"$ifNull": ["$first_picked_at", False]}, 1, 0]},
+                        ]
+                    },
+                    "first_picked_at": {"$ifNull": ["$first_picked_at", now]},
+                    "lease_owner": owner,
+                    "lease_expires_at": lease_time(lease_seconds),
+                    "updated_at": now,
+                }
+            }
+        ],
+        sort=[("updated_at", ASCENDING)],
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def renew_lease(run_id: str, owner: str, lease_seconds: float) -> bool:
+    """Extend the lease only if this owner still holds it."""
+    result = await storage.agent_runs().update_one(
+        {"_id": run_id, "lease_owner": owner},
+        {"$set": {"lease_expires_at": lease_time(lease_seconds)}},
+    )
+    return result.matched_count == 1
+
+
+async def release_lease(run_id: str, owner: str) -> bool:
+    result = await storage.agent_runs().update_one(
+        {"_id": run_id, "lease_owner": owner},
+        {"$set": {"lease_owner": None, "lease_expires_at": None}},
+    )
+    return result.matched_count == 1
+
+
+async def pin_fault_epoch(run_id: str, epoch: int) -> int:
+    """Pin the run's fault epoch once; later calls return the pinned value."""
+    await storage.agent_runs().update_one(
+        {"_id": run_id, "fault_epoch": None}, {"$set": {"fault_epoch": epoch}}
+    )
+    pinned = await get_fault_epoch(run_id)
+    return pinned
