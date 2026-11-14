@@ -1,1 +1,2 @@
-# Python dependencies will be pinned here by the backend owners.
+# Shared dependencies will be added here by each backend owner.
+pydantic>=2.10,<3
