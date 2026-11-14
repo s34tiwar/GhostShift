@@ -17,7 +17,13 @@ ACTIVE_RUN_STATUSES = ("QUEUED", "CREATED", "DIAGNOSING", "ACTION_PENDING", "RUN
 
 
 class ActiveRunExistsError(Exception):
-    """A machine already has an unfinished recovery run."""
+    """A machine already has an unfinished recovery run (exposed as .run_id)."""
+
+    def __init__(self, machine_id: str, run_id: str | None = None):
+        self.machine_id = machine_id
+        self.run_id = run_id
+        suffix = f" {run_id}" if run_id else ""
+        super().__init__(f"{machine_id} already has an active run{suffix}")
 
 # One client per process / event loop, created lazily. The worker and the API
 # are separate processes, so each builds its own. Never share across loops.
@@ -109,7 +115,7 @@ async def enqueue_run(
         {"_id": 1},
     )
     if existing is not None:
-        raise ActiveRunExistsError(f"{machine_id} already has an active run")
+        raise ActiveRunExistsError(machine_id, existing["_id"])
     run_id = new_run_id()
     now = utc_now()
     await agent_runs().insert_one(

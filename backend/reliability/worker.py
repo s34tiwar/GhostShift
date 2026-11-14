@@ -314,9 +314,9 @@ async def process_run(run: dict, owner: str, factory, planner) -> None:
     finally:
         await lease.stop()
 
-    # Reached only without an exception: hand the run back.
-    if not lease.lost.is_set():
-        await ledger.release_lease(run_id, owner)
+    # Reached only without an exception: hand the run back. Owner-guarded, so a
+    # lease this worker already lost (or that an abort cleared) is left untouched.
+    await ledger.release_lease(run_id, owner)
 
 
 async def poll_once(owner: str, factory, planner) -> str | None:
@@ -368,6 +368,8 @@ async def main() -> None:
                     log.info("processed %s", run_id)
             except LeaseLost as exc:
                 log.warning("lease lost on %s; stopped acting on it", exc)
+            except ledger.RunTerminalError:
+                log.warning("run finished or was aborted mid-pass; stopped acting on it")
             except Exception as exc:
                 # Leave the lease to expire; another pass will pick the run up.
                 log.error("run pass failed: %s", type(exc).__name__)

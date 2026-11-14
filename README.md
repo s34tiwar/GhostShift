@@ -48,6 +48,13 @@ Browser ── Vercel / Next.js (frontend/)
 - The API never reads Mongo directly for runs: it calls the `reliability` module (`get_run`, `list_audit`, `get_machine_ledger`, `enqueue_run`, `resume_run`, `arm_crash`).
 - Factory state lives in MongoDB (not SQLite), in its own collection.
 
+### Invariants the system keeps
+
+1. Policy is checked before any mutation.
+2. Intent is recorded before the tool call.
+3. The same `operation_id` is reused on retry, and the factory replays the saved receipt instead of repairing twice.
+4. External verification happens before `EFFECT_VERIFIED`.
+5. Resume never reruns a successful effect. Ambiguous state becomes `REQUIRES_REVIEW`, never a blind repeat.
 
 ## Repo layout
 
@@ -158,8 +165,4 @@ Tests that need MongoDB skip themselves when the connection is not configured: s
 
 ## Technologies
 
-- **Data:** MongoDB Atlas (Sandbox), Atlas Vector Search
-- **Backend:** Python, FastAPI, Uvicorn, PyMongo
-- **Agent:** LangGraph, Google Gemini API
-- **Frontend:** Next.js, React, TypeScript, Tailwind CSS
-- **Hosting:** Vercel (frontend), Railway (API, factory, worker)
+Everything in this repository was written during the hackathon on Nov 14, 2026. Third-party dependencies: MongoDB Atlas (Sandbox) and Atlas Vector Search, FastAPI, Uvicorn, PyMongo, LangGraph, the Google Gemini API, Next.js, React, Tailwind CSS, Vercel, and Railway.
