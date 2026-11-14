@@ -1,1 +1,7 @@
 # Python dependencies will be pinned here by the backend owners.
+fastapi>=0.115       
+uvicorn>=0.30           
+pydantic>=2.7           
+pymongo>=4.13           
+pytest>=8.0             
+httpx>=0.27             
