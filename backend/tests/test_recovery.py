@@ -380,3 +380,59 @@ def test_session_database_is_random_and_never_shared(test_db_name):
     assert re.fullmatch(r"ghostshift_test_[0-9a-f]{8}", test_db_name)
     assert test_db_name not in ("ghostshift_test_rhea", "ghostshift_hackathon", "ghostshift")
     assert os.environ["MONGODB_DB"] == test_db_name
+
+
+# --- one active run per machine ----------------------------------------------
+
+
+async def _set_status(run_id, status):
+    await storage.agent_runs().update_one({"_id": run_id}, {"$set": {"status": status}})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", storage.ACTIVE_RUN_STATUSES)
+async def test_enqueue_blocked_by_run_in_each_active_status(test_db, status):
+    run_id = await storage.enqueue_run("machine_b")
+    await _set_status(run_id, status)
+    with pytest.raises(storage.ActiveRunExistsError):
+        await storage.enqueue_run("machine_b")
+    assert await storage.agent_runs().count_documents({"machine_id": "machine_b"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_different_machine_can_still_enqueue(test_db):
+    await storage.enqueue_run("machine_b")
+    other = await storage.enqueue_run("machine_a")
+    assert other.startswith("run_")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "DENIED"])
+async def test_terminal_run_frees_the_machine(test_db, status):
+    first = await storage.enqueue_run("machine_b")
+    await _set_status(first, status)
+    second = await storage.enqueue_run("machine_b")
+    assert second != first
+
+
+@pytest.mark.asyncio
+async def test_has_active_runs_follows_run_status(test_db):
+    assert await ledger.has_active_runs() is False
+    run_id = await storage.enqueue_run("machine_b")
+    assert await ledger.has_active_runs() is True
+    await _set_status(run_id, "COMPLETED")
+    assert await ledger.has_active_runs() is False
+
+
+@pytest.mark.asyncio
+async def test_resume_run_still_works_under_the_guard(test_db):
+    run_id = await storage.enqueue_run("machine_b")
+    await _set_status(run_id, "RUNNING")
+    result = await ledger.resume_run(run_id)
+    assert result == {"run_id": run_id, "status": "NEEDS_RECONCILIATION"}
+    doc = await storage.agent_runs().find_one({"_id": run_id})
+    assert doc["restart_count"] == 1
+    # same run, no new run minted, and the machine is still guarded
+    assert await storage.agent_runs().count_documents({"machine_id": "machine_b"}) == 1
+    with pytest.raises(storage.ActiveRunExistsError):
+        await storage.enqueue_run("machine_b")
