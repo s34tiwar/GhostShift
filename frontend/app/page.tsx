@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import BackendActivity from "@/components/BackendActivity";
 import ConnectionMap from "@/components/ConnectionMap";
 import FactoryCards from "@/components/FactoryCards";
-import { api, hasBackend } from "@/lib/api";
+import { ApiError, api, hasBackend } from "@/lib/api";
 import { liveSteps, previewSteps, toDisplayMachines, type PreviewPhase } from "@/lib/activity";
 import type { AuditEvent, FactoryMachine, LedgerEntry, Machine, RunView } from "@/lib/types";
 
@@ -130,7 +130,7 @@ export default function Home() {
     } finally { setBusy(false); }
   }
 
-  async function runRecovery() {
+  async function runRecovery(options: { crashArmed?: boolean; scenario?: "unsafe_shutdown" } = {}) {
     if (!hasBackend) {
       setPreviewPhase("running");
       setPreviewStep(1);
@@ -138,15 +138,17 @@ export default function Home() {
     }
     setBusy(true);
     try {
-      const created = await api.createRun(target);
+      const created = await api.createRun(target, options);
       window.localStorage.setItem(runKey, created.run_id);
       setRunId(created.run_id);
-      setRun({ run_id: created.run_id, machine_id: target, status: created.status, procedure_id: null, retrieval_mode: null, current_action_id: null, worker_status: null });
+      setRun({ run_id: created.run_id, machine_id: target, status: created.status, procedure_id: null, retrieval_mode: null, current_action_id: null, worker_status: null, recovery_count: 0, restart_count: 0 });
       setAudit([]);
       setActions([]);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start recovery");
+      setError(cause instanceof ApiError && cause.status === 409 && cause.message.includes("active run")
+        ? "Machine B already has an active run"
+        : cause instanceof Error ? cause.message : "Could not start recovery");
     } finally { setBusy(false); }
   }
 
@@ -157,9 +159,21 @@ export default function Home() {
       setPreviewStep(-1);
       return;
     }
+    let force = false;
+    if (activeRun) {
+      force = window.confirm("A recovery run is active. Resetting now will abort it. Continue?");
+      if (!force) return;
+    }
     setBusy(true);
     try {
-      await api.reset();
+      try {
+        await api.reset(force);
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 409 || force) throw cause;
+        const confirmed = window.confirm("A recovery run is still active. Abort it and reset the demo?");
+        if (!confirmed) return;
+        await api.reset(true);
+      }
       window.localStorage.removeItem(runKey);
       setRunId(null);
       setRun(null);
@@ -196,7 +210,14 @@ export default function Home() {
       <section className="factory-section"><div className="section-heading"><div><p className="section-number">01 / FACTORY</p><h2>Machines</h2></div><span className="event-count"><i/>{hasBackend ? "Live state" : "Connection preview"}</span></div>
         {error && <div className="backend-error" role="alert">{error}</div>}
         {hasBackend && machines.length !== 3 ? <div className="machine-loading">{loaded ? "Waiting for backend" : "Loading machines"}</div> : <><FactoryCards machines={machines}/><ConnectionMap machines={machines}/></>}
-        <div className="factory-actions" aria-label="Machine B controls"><span>Machine B</span><button className="button danger" onClick={stopSync} disabled={busy || Boolean(activeRun) || (hasBackend ? !targetMachine || targetMachine.fault_type !== "NONE" : previewPhase === "faulted" || previewPhase === "running")}>Stop sync</button><button className="button primary" onClick={runRecovery} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery</button><button className="reset-button" onClick={resetDemo} disabled={busy || Boolean(activeRun) || !hasBackend && previewPhase === "running"}>Reset</button></div>
+        <div className="factory-actions" aria-label="Machine B demo controls">
+          <span>Machine B demo</span>
+          <button className="button danger" onClick={stopSync} disabled={busy || Boolean(activeRun) || (hasBackend ? !targetMachine || targetMachine.fault_type !== "NONE" : previewPhase === "faulted" || previewPhase === "running")}>Break sync</button>
+          <button className="button primary" onClick={() => runRecovery()} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery</button>
+          <button className="button crash" onClick={() => runRecovery({ crashArmed: true })} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery, crash armed</button>
+          <button className="button unsafe" onClick={() => runRecovery({ scenario: "unsafe_shutdown" })} disabled={busy || Boolean(activeRun) || (hasBackend && !targetMachine)}>Try unsafe action</button>
+          <button className="reset-button" onClick={resetDemo} disabled={busy}>Reset</button>
+        </div>
       </section>
       <BackendActivity
         states={activity}
@@ -205,9 +226,6 @@ export default function Home() {
         runStatus={run?.status}
         incidentState={incidentState}
         machine={targetMachine}
-        busy={busy}
-        onSimulateError={stopSync}
-        onRecover={runRecovery}
       />
       <footer><span>GhostShift / Toronto 2026</span><span>Agents in context ↗</span></footer>
     </div>

@@ -24,9 +24,6 @@ interface BackendActivityProps {
   runStatus?: string;
   incidentState: IncidentState;
   machine?: FactoryMachine;
-  busy: boolean;
-  onSimulateError: () => void;
-  onRecover: () => void;
 }
 
 function targetStep(states: ActivityState[]) {
@@ -59,7 +56,7 @@ function evidenceFor(step: number, machine: FactoryMachine | undefined, run: Run
   return [run?.worker_status ?? "Worker verifying", `Restarts: ${machine?.restart_count ?? 0}`];
 }
 
-function ActivityPresentation({ states, live, run, runStatus, incidentState, machine, busy, onSimulateError, onRecover }: BackendActivityProps) {
+function ActivityPresentation({ states, live, run, runStatus, incidentState, machine }: BackendActivityProps) {
   const actualTarget = targetStep(states);
   const [visibleStep, setVisibleStep] = useState(incidentState === "ready" ? -1 : incidentState === "faulted" ? 0 : 1);
 
@@ -72,7 +69,8 @@ function ActivityPresentation({ states, live, run, runStatus, incidentState, mac
 
   const displayStates = useMemo(() => narratedStates(visibleStep, states), [states, visibleStep]);
   const presentationComplete = incidentState === "recovered" && visibleStep >= steps.length;
-  const presentedIncident = incidentState === "recovered" && !presentationComplete ? "recovering" : incidentState;
+  const waitingForRun = incidentState === "ready" && !run;
+  const faultObserved = incidentState === "faulted" && !run;
   const spotlightIndex = Math.min(Math.max(visibleStep, 0), steps.length - 1);
   const spotlight = steps[spotlightIndex];
   const spotlightState = displayStates[spotlightIndex];
@@ -97,25 +95,14 @@ function ActivityPresentation({ states, live, run, runStatus, incidentState, mac
         </ol>
       </div>
 
-      {(presentedIncident === "ready" || presentedIncident === "faulted") ? <div className={`activity-incident ${presentedIncident}`} role="status">
-        <span className="incident-icon" aria-hidden="true">{presentedIncident === "faulted" ? "!" : "◇"}</span>
-        <div className="incident-copy">
-          <small>{presentedIncident === "faulted" ? "Sync error detected" : "Demo ready"}</small>
-          <strong>{presentedIncident === "faulted" ? "Machine B stopped syncing" : "Machine B is syncing normally"}</strong>
-          <p>{machine?.message ?? (presentedIncident === "faulted" ? "The fault is live. Backlog will keep rising until recovery runs." : "Start the demo by injecting a real sync-process failure.")}</p>
-          {machine && presentedIncident === "faulted" && <span className="incident-metric">Backlog <b>{machine.backlog}</b> · Restarts <b>{machine.restart_count ?? 0}</b></span>}
-        </div>
-        {presentedIncident === "ready"
-          ? <button className="activity-demo-button" onClick={onSimulateError} disabled={busy}>{busy ? "Injecting fault…" : "Simulate sync error"}</button>
-          : <button className="activity-recover-button" onClick={onRecover} disabled={busy}>{busy ? "Starting recovery…" : "Recover Machine B"}</button>}
-      </div> : <div className={`activity-spotlight ${spotlightState}`} key={`${spotlightIndex}-${spotlightState}`} role="status" aria-live="polite">
-        <div className="spotlight-kicker"><span><i/>Now happening</span><b>Step {String(spotlightIndex + 1).padStart(2, "0")} / 06</b></div>
+      <div className={`activity-spotlight ${waitingForRun ? "pending" : spotlightState}`} key={`${spotlightIndex}-${spotlightState}`} role="status" aria-live="polite">
+        <div className="spotlight-kicker"><span><i/>{waitingForRun ? "Demo controls ready" : faultObserved ? "Live fault observed" : "Now happening"}</span><b>{waitingForRun ? "Choose a scenario above" : `Step ${String(spotlightIndex + 1).padStart(2, "0")} / 06`}</b></div>
         <div className="spotlight-body">
-          <span className="spotlight-icon" aria-hidden="true">{spotlightState === "blocked" ? "!" : presentationComplete ? "✓" : spotlightIndex + 1}</span>
-          <div><small>{presentationComplete ? "Recovery complete" : spotlight.detail}</small><h3>{presentationComplete ? "Machine B is syncing again" : spotlight.title}</h3><p>{presentationComplete ? "The repair effect is verified, the run is complete, and Machine B is healthy." : spotlight.narration}</p></div>
+          <span className="spotlight-icon" aria-hidden="true">{waitingForRun ? "◇" : spotlightState === "blocked" ? "!" : presentationComplete ? "✓" : spotlightIndex + 1}</span>
+          <div><small>{waitingForRun ? "Machine B demo" : presentationComplete ? "Recovery complete" : spotlight.detail}</small><h3>{waitingForRun ? "Choose a demo scenario" : presentationComplete ? "Machine B is syncing again" : spotlight.title}</h3><p>{waitingForRun ? "Use the Machine B controls above to break sync, run a normal recovery, arm a deliberate crash, or prove an unsafe action is denied." : presentationComplete ? "The repair effect is verified, the run is complete, and Machine B is healthy." : spotlight.narration}</p></div>
         </div>
-        <div className="spotlight-evidence">{evidence.map((item) => <span key={item}>{item}</span>)}</div>
-      </div>}
+        {!waitingForRun && <div className="spotlight-evidence">{evidence.map((item) => <span key={item}>{item}</span>)}</div>}
+      </div>
     </div>
   </section>;
 }
