@@ -3,6 +3,19 @@ import type { AuditEvent, FactoryMachine, LedgerEntry, Machine, RunView } from "
 export type ActivityState = "pending" | "active" | "done" | "blocked";
 export type PreviewPhase = "idle" | "faulted" | "running" | "complete";
 
+export const TERMINAL_RUN_STATUSES = ["COMPLETED", "FAILED", "DENIED"] as const;
+
+export function isTerminal(status: string | undefined | null): boolean {
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status ?? "");
+}
+
+/** A run stopped from outside the pipeline (demo reset, crash-loop guard), not by a failed step. */
+export function stoppedReason(audit: AuditEvent[]): "aborted" | "attempts" | null {
+  if (audit.some((event) => event.event_type === "RUN_ABORTED_BY_RESET")) return "aborted";
+  if (audit.some((event) => event.event_type === "RECOVERY_ATTEMPTS_EXCEEDED")) return "attempts";
+  return null;
+}
+
 export function previewSteps(phase: PreviewPhase, activeStep: number): ActivityState[] {
   return Array.from({ length: 6 }, (_, index) => {
     if (phase === "complete") return "done";
@@ -41,6 +54,13 @@ export function liveSteps(machine: FactoryMachine | undefined, run: RunView | nu
     }
   }
 
+  // Crash drill: the worker died after the repair was applied and before it was
+  // verified. Show the repair as applied and verification waiting for a takeover.
+  if (events.has("CRASH_INJECTED") && !verified && !isTerminal(run.status)) {
+    states[4] = "done";
+    states[5] = "active";
+  }
+
   if (run.status === "COMPLETED") {
     if (verified && machine.healthy) return states.map(() => "done");
     for (let index = 1; index < states.length; index++) if (states[index] === "active") states[index] = "pending";
@@ -51,10 +71,13 @@ export function liveSteps(machine: FactoryMachine | undefined, run: RunView | nu
     states[4] = "pending";
     states[5] = "pending";
   } else if (run.status === "FAILED") {
-    const failedIndex = events.has("PLANNER_ABSTAINED") ? 2 : executing ? 5 : planned ? 3 : 1;
     for (let index = 1; index < states.length; index++) if (states[index] === "active") states[index] = "pending";
-    states[failedIndex] = "blocked";
-    for (let index = failedIndex + 1; index < states.length; index++) states[index] = "pending";
+    // Aborted by a reset or stopped by the crash-loop guard: no pipeline step failed.
+    if (stoppedReason(audit) === null) {
+      const failedIndex = events.has("PLANNER_ABSTAINED") ? 2 : executing ? 5 : planned ? 3 : 1;
+      states[failedIndex] = "blocked";
+      for (let index = failedIndex + 1; index < states.length; index++) states[index] = "pending";
+    }
   } else if (run.status === "NEEDS_RECONCILIATION" || action?.status === "REQUIRES_REVIEW") {
     const verifying = Boolean(action?.external_receipt) || action?.status === "REQUIRES_REVIEW" || verified;
     for (let index = 1; index < states.length; index++) if (states[index] === "active") states[index] = "pending";
@@ -69,7 +92,9 @@ export function toDisplayMachines(machines: FactoryMachine[], run: RunView | nul
   return [...machines].sort((a, b) => a.machine_id.localeCompare(b.machine_id)).map((machine) => {
     const isTarget = run?.machine_id === machine.machine_id;
     const completed = isTarget && run?.status === "COMPLETED" && verified && machine.healthy;
-    const unverifiedEffect = isTarget && Boolean(run) && !completed && machine.healthy;
+    // Healthy but not yet verified only while the run is still going; once the run is
+    // COMPLETED, FAILED or DENIED the card follows the machine's real health.
+    const unverifiedEffect = isTarget && Boolean(run) && !isTerminal(run?.status) && !completed && machine.healthy;
     const status = completed ? "reconciled" : unverifiedEffect ? "recovering" : machine.healthy && machine.sync_running && machine.network_connected ? "healthy" : "failed";
     return {
       machine_id: machine.machine_id,
