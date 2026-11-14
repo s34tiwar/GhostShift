@@ -163,21 +163,6 @@ cd backend && python -m pytest tests -q
 
 Tests that need MongoDB skip themselves when the connection is not configured: set `BACKEND_MONGODB_URI` (or `MONGODB_URI`) for the API live tests, and `TEST_MONGODB_URI` for the factory tests. They use throwaway databases and collections and clean up after themselves.
 
-## Honest labelling
-
-- The header badge says **Live backend** or **Mock backend**. Without an API URL the page is a browser-only simulation: nothing is written to MongoDB and a refresh resets it.
-- Each run shows the `retrieval_mode` it actually used. If Atlas Vector Search or the Gemini planner is unavailable, the worker uses a labelled deterministic fallback (`fallback_deterministic`) and records that in the audit. We do not claim LLM reasoning when the fallback ran.
-- The unsafe-action demo skips the planner on purpose: the worker proposes `shutdown_factory` so the policy gate visibly denies it. The audit labels it as a demo scenario.
-
-## Team
-
-| Person | Owns |
-|---|---|
-| Arav | Factory simulator (`backend/factory`) |
-| Shivani | AI agent: LangGraph planner, retrieval, procedures (`backend/agent`) |
-| Rhea | Reliability and governance: ledger, policies, worker, crash and resume (`backend/reliability`) |
-| Enes | API routes, frontend, deploy and integration |
-
-## Built during the hackathon, and what we depend on
+## Technologies
 
 Everything in this repository was written during the hackathon on Nov 14, 2026. Third-party dependencies: MongoDB Atlas (Sandbox) and Atlas Vector Search, FastAPI, Uvicorn, PyMongo, LangGraph, the Google Gemini API, Next.js, React, Tailwind CSS, Vercel, and Railway.
