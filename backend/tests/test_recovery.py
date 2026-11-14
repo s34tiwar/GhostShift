@@ -437,3 +437,38 @@ async def test_resume_run_still_works_under_the_guard(test_db):
     assert await storage.agent_runs().count_documents({"machine_id": "machine_b"}) == 1
     with pytest.raises(storage.ActiveRunExistsError):
         await storage.enqueue_run("machine_b")
+
+
+# --- recovery_count in get_run -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_new_run_has_recovery_count_zero(test_db):
+    run_id = await storage.enqueue_run("machine_b")
+    run = await ledger.get_run(run_id)
+    assert run["status"] == "QUEUED"
+    assert run["recovery_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_takeover_shows_in_recovery_count(test_db):
+    run_id = await storage.enqueue_run("machine_b")
+    first = await ledger.acquire_run_lease("worker_a", 10)  # first pickup: not a recovery
+    assert first["_id"] == run_id
+    assert (await ledger.get_run(run_id))["recovery_count"] == 0
+    # worker_a dies; its lease expires; worker_b takes over
+    await storage.agent_runs().update_one(
+        {"_id": run_id}, {"$set": {"lease_expires_at": ledger.lease_time(-1)}}
+    )
+    second = await ledger.acquire_run_lease("worker_b", 10)
+    assert second["_id"] == run_id and second["recovery_attempts"] == 1
+    assert (await ledger.get_run(run_id))["recovery_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_recovery_attempts_means_zero(test_db):
+    run_id = await storage.enqueue_run("machine_b")
+    await storage.agent_runs().update_one({"_id": run_id}, {"$unset": {"recovery_attempts": ""}})
+    doc = await storage.agent_runs().find_one({"_id": run_id})
+    assert "recovery_attempts" not in doc
+    assert (await ledger.get_run(run_id))["recovery_count"] == 0
