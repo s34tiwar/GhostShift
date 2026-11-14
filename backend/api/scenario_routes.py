@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from api import factory_client
 from api.schemas import CrashArmRequest, RunCreateRequest, RunCreateResponse
 from reliability import ledger, storage
 
@@ -16,7 +17,16 @@ router = APIRouter(prefix="/api")
 
 @router.post("/runs", status_code=202, response_model=RunCreateResponse)
 async def create_run(body: RunCreateRequest):
-    run_id = await storage.enqueue_run(body.machine_id, body.crash_armed)
+    try:
+        health = await factory_client.get_health(body.machine_id)
+    except factory_client.FactoryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if health.get("healthy") and health.get("fault_type", "NONE") == "NONE":
+        raise HTTPException(status_code=409, detail=f"{body.machine_id} has no fault to recover")
+    try:
+        run_id = await storage.enqueue_run(body.machine_id, body.crash_armed)
+    except storage.ActiveRunExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"run_id": run_id, "status": "QUEUED"}
 
 

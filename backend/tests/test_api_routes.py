@@ -2,6 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from api import factory_client
 from api.main import app
 from reliability import ledger, storage
 
@@ -41,7 +42,21 @@ def test_reads_404_for_unknown_run(fake_run):
         assert client.get(f"/api/runs/nope{suffix}").status_code == 404
 
 
+FAULTED = {"machine_id": "machine_b", "healthy": False, "fault_type": "SYNC_PROCESS_DOWN"}
+HEALTHY = {"machine_id": "machine_b", "healthy": True, "fault_type": "NONE"}
+
+
+def _factory(monkeypatch, health=None, error=None):
+    async def get_health(machine_id):
+        if error:
+            raise factory_client.FactoryUnavailable(error)
+        return health
+
+    monkeypatch.setattr(factory_client, "get_health", get_health)
+
+
 def test_create_run_returns_202(monkeypatch):
+    _factory(monkeypatch, FAULTED)
     seen = {}
 
     async def enqueue_run(machine_id, crash_armed=False):
@@ -53,6 +68,43 @@ def test_create_run_returns_202(monkeypatch):
     assert r.status_code == 202
     assert r.json() == {"run_id": "run_abc", "status": "QUEUED"}
     assert seen["args"] == ("machine_b", True)
+
+
+def test_create_run_409_when_machine_has_no_fault(monkeypatch):
+    _factory(monkeypatch, HEALTHY)
+    r = client.post("/api/runs", json={"machine_id": "machine_b"})
+    assert r.status_code == 409
+    assert "no fault" in r.json()["detail"]
+
+
+def test_create_run_409_when_active_run_exists(monkeypatch):
+    _factory(monkeypatch, FAULTED)
+
+    class ActiveRunExistsError(Exception):
+        pass
+
+    async def enqueue_run(machine_id, crash_armed=False):
+        raise ActiveRunExistsError("machine_b already has an active run")
+
+    monkeypatch.setattr(storage, "ActiveRunExistsError", ActiveRunExistsError, raising=False)
+    monkeypatch.setattr(storage, "enqueue_run", enqueue_run)
+    r = client.post("/api/runs", json={"machine_id": "machine_b"})
+    assert r.status_code == 409
+    assert "active run" in r.json()["detail"]
+
+
+def test_create_run_503_when_factory_unavailable(monkeypatch):
+    _factory(monkeypatch, error="factory down")
+    assert client.post("/api/runs", json={"machine_id": "machine_b"}).status_code == 503
+
+
+def test_run_view_exposes_recovery_count(monkeypatch):
+    async def get_run(run_id):
+        return {**RUN, "recovery_count": 2}
+
+    monkeypatch.setattr(ledger, "get_run", get_run)
+    body = client.get("/api/runs/run_x").json()
+    assert body["recovery_count"] == 2 and body["restart_count"] == 0
 
 
 def test_create_run_rejects_unknown_machine():

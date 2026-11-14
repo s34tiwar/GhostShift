@@ -68,7 +68,8 @@ class RunView(BaseModel):
     procedure_id: str | None = None
     retrieval_mode: str | None = None
     current_action_id: str | None = None
-    restart_count: int = 0
+    restart_count: int = 0  # manual resumes
+    recovery_count: int = 0  # worker takeovers
     worker_status: str | None = None
 
 

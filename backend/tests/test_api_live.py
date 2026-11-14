@@ -18,6 +18,7 @@ COLLECTIONS = ("agent_runs", "action_ledger", "audit_events", "policies")
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("MONGODB_DB", TEST_DB)
+    from api import factory_client
     from api.main import app
     from reliability import storage
 
@@ -26,6 +27,11 @@ def client(monkeypatch):
         assert db.name == TEST_DB
         for name in COLLECTIONS:
             await db.drop_collection(name)
+
+    async def faulted(machine_id):
+        return {"machine_id": machine_id, "healthy": False, "fault_type": "SYNC_PROCESS_DOWN"}
+
+    monkeypatch.setattr(factory_client, "get_health", faulted)  # factory not deployed yet
 
     with TestClient(app) as c:
         c.portal.call(storage.close_client)  # client bound to this loop
