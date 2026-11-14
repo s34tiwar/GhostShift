@@ -1,15 +1,25 @@
-"""Shared fixtures. Factory tests run against a REAL MongoDB (TEST_MONGODB_URI), each test in
-its own throwaway collection that is dropped afterwards. Skipped if MongoDB is unreachable."""
+"""Shared test fixtures.
+
+- Rhea's reliability tests import `reliability`, `api`, `tests.fakes` (backend/ on sys.path).
+- Arav's factory tests run against a REAL MongoDB (TEST_MONGODB_URI), each test in its own
+  throwaway collection that is dropped afterwards. Skipped if MongoDB is unreachable.
+"""
 
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_DIR = REPO_ROOT / "backend"
+for _p in (str(REPO_ROOT), str(BACKEND_DIR)):  # works whether pytest runs from repo root or backend/
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def _load_dotenv() -> None:
@@ -29,7 +39,33 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-TEST_DB_NAME = os.environ.get("TEST_MONGODB_DB") or "ghostshift_factory_tests"
+from reliability import policies, storage  # noqa: E402
+from tests.fakes import TEST_COLLECTIONS, TEST_DB  # noqa: E402
+
+
+# ---------------- Rhea: reliability fixtures ----------------
+@pytest_asyncio.fixture
+async def test_db(monkeypatch):
+    """Point storage at the private test DB (never ghostshift_hackathon)."""
+    monkeypatch.setenv("MONGODB_DB", TEST_DB)
+    await storage.close_client()  # fresh client bound to this test's event loop
+    db = storage.get_db()
+    assert db.name == TEST_DB
+    yield db
+    for name in TEST_COLLECTIONS:
+        await db.drop_collection(name)
+    await storage.close_client()
+
+
+@pytest_asyncio.fixture
+async def ready(test_db):
+    await storage.init_indexes()
+    await policies.seed_default_policy()
+    return test_db
+
+
+# ---------------- Arav: factory fixtures ----------------
+FACTORY_TEST_DB_NAME = os.environ.get("TEST_MONGODB_DB") or "ghostshift_factory_tests"
 
 
 @pytest.fixture(scope="session")
@@ -49,14 +85,14 @@ def mongo_client():
 
 
 @pytest.fixture
-def test_db(mongo_client):
-    return mongo_client[TEST_DB_NAME]
+def factory_db(mongo_client):
+    return mongo_client[FACTORY_TEST_DB_NAME]
 
 
 @pytest.fixture
-def collection(test_db):
+def collection(factory_db):
     name = f"factory_test_{uuid.uuid4().hex[:12]}"
-    col = test_db[name]
+    col = factory_db[name]
     yield col
     col.drop()
 

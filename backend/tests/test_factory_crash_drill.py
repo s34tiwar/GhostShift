@@ -17,7 +17,7 @@ import time
 import httpx
 import pytest
 
-from .conftest import REPO_ROOT, TEST_DB_NAME
+from .conftest import FACTORY_TEST_DB_NAME as TEST_DB_NAME, REPO_ROOT
 
 OP = "run_drill:machine_b:restart_sync:epoch_1"
 
@@ -145,8 +145,8 @@ def test_six_simultaneous_resumers_apply_once(live):
     assert httpx.get(f"{live.url}/machines/machine_b/health", timeout=20).json()["restart_count"] == 1
 
 
-def test_demo_reset_refuses_while_run_active(live, test_db):
-    runs = test_db[f"{live.env['FACTORY_COLLECTION']}_runs"]
+def test_demo_reset_refuses_while_run_active(live, factory_db):
+    runs = factory_db[f"{live.env['FACTORY_COLLECTION']}_runs"]
     try:
         httpx.post(f"{live.url}/machines/machine_b/break", json={"fault_type": "SYNC_PROCESS_DOWN"}, timeout=20)
         runs.insert_one({"run_id": "run_active", "status": "EXECUTING"})
