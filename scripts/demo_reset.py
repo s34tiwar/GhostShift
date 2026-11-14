@@ -12,7 +12,8 @@ Usage (from repo root, env loaded):
 Exit codes: 0 reset done, 2 active runs (nothing reset), 3 Atlas could not be checked,
 4 factory reset request failed.
 Env: FACTORY_BASE_URL (default http://localhost:8001), FACTORY_TOKEN (optional),
-MONGODB_URI, MONGODB_DB (default ghostshift), RUNS_COLLECTION (default agent_runs).
+BACKEND_MONGODB_URI, MONGODB_DB (default ghostshift), RUNS_COLLECTION (default agent_runs).
+Legacy MONGODB_URI is also accepted.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ TERMINAL_STATUSES = {"COMPLETED", "FAILED", "DENIED"}
 def active_runs() -> list[dict]:
     from pymongo import MongoClient
 
-    uri = os.environ["MONGODB_URI"]
+    uri = os.environ.get("BACKEND_MONGODB_URI") or os.environ["MONGODB_URI"]
     db = os.environ.get("MONGODB_DB") or "ghostshift"
     col = os.environ.get("RUNS_COLLECTION") or "agent_runs"
     client = MongoClient(uri, serverSelectionTimeoutMS=8000)

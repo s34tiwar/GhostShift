@@ -2,7 +2,8 @@
 
 Run from the repo root:
     uvicorn backend.factory.main:app --port 8001
-Env: MONGODB_URI (required), MONGODB_DB, FACTORY_COLLECTION, FACTORY_TOKEN (optional).
+Env: BACKEND_MONGODB_URI (required; legacy MONGODB_URI accepted), MONGODB_DB,
+FACTORY_COLLECTION, FACTORY_TOKEN (optional).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def require_token(x_factory_token: Optional[str] = Header(default=None)) -> None
 def create_app(store_factory: Callable[[], FactoryStore] = FactoryStore.from_env) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        store = store_factory()  # raises (and the process exits) if MONGODB_URI is missing
+        store = store_factory()  # exits if neither supported MongoDB URI variable is set
         store.ensure_machines()
         app.state.store = store
         yield

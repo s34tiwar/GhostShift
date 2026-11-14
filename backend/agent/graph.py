@@ -209,7 +209,7 @@ async def _plan_recovery_from_environment(
     """Run the planner with process-local clients configured from the worker env."""
 
     load_dotenv()
-    mongo_uri = os.getenv("MONGODB_URI")
+    mongo_uri = os.getenv("BACKEND_MONGODB_URI") or os.getenv("MONGODB_URI")
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not mongo_uri or not gemini_key:
         return _fallback_result(

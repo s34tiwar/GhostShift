@@ -54,7 +54,7 @@ def _drop_test_database(name: str) -> None:
     from pymongo import MongoClient
     from pymongo.errors import OperationFailure
 
-    uri = os.environ.get("MONGODB_URI")
+    uri = os.environ.get("BACKEND_MONGODB_URI") or os.environ.get("MONGODB_URI")
     # Refuse to drop anything that is not a random per-session test database.
     if not uri or not name.startswith(TEST_DB_PREFIX):
         return

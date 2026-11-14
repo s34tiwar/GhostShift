@@ -7,7 +7,7 @@ Simulated machines with real, durable state in **MongoDB Atlas** (not SQLite: no
 uvicorn backend.factory.main:app --port 8001                       # local, from repo root
 uvicorn backend.factory.main:app --host 0.0.0.0 --port $PORT       # Railway start command
 ```
-Env: `MONGODB_URI` (required, the service exits without it), `MONGODB_DB` (default `ghostshift`),
+Env: `BACKEND_MONGODB_URI` (required; legacy `MONGODB_URI` is also accepted), `MONGODB_DB` (default `ghostshift`),
 `FACTORY_COLLECTION` (default `factory_machines`), `FACTORY_TOKEN` (optional: if set, every POST needs header
 `X-Factory-Token`; GETs stay open).
 
