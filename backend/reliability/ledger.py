@@ -66,6 +66,8 @@ async def list_audit(run_id: str) -> dict:
             "reason": d.get("reason"),
             "action_id": d.get("action_id"),
             "policy_version": d.get("policy_version"),
+            "decision": d.get("decision"),
+            "detail": d.get("detail") or None,
         }
         async for d in cursor
     ]

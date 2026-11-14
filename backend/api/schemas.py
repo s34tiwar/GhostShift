@@ -87,6 +87,10 @@ class AuditEvent(BaseModel):
     reason: str | None = None
     action_id: str | None = None
     policy_version: int | None = None
+    # "ALLOWED" / "DENIED" on POLICY_CHECK events; None on events without a decision.
+    decision: str | None = None
+    # Event-specific context, e.g. {"scenario": ..., "planner_mode": ...} on PLANNER_RESULT.
+    detail: dict | None = None
 
 
 class AuditResponse(BaseModel):

@@ -566,3 +566,34 @@ async def test_worker_lease_on_aborted_run_cannot_renew_or_write(test_db):
     with pytest.raises(ledger.RunTerminalError):
         await ledger.set_run_status(run_id, "COMPLETED")
     assert (await storage.agent_runs().find_one({"_id": run_id}))["status"] == "FAILED"
+
+
+# --- audit events expose decision and detail -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_response_keeps_decision_and_detail(test_db):
+    from api.schemas import AuditResponse
+
+    await storage.init_indexes()
+    await policies.seed_default_policy()
+    run_id = await storage.enqueue_run("machine_b")
+    await ledger.append_audit(
+        run_id, None, "worker", "PLANNER_RESULT", None, "Demo scenario unsafe_shutdown",
+        {"scenario": "unsafe_shutdown", "planner_mode": "demo_scenario"}, None,
+    )
+    await policies.authorize(run_id, "act_ok", PROPOSAL)
+    await policies.authorize(run_id, "act_bad", DENY_PROPOSAL)
+    await ledger.append_audit(run_id, None, "worker", "NOTE", None, None, {}, None)
+
+    response = AuditResponse.model_validate(await ledger.list_audit(run_id))
+    events = response.events
+    assert [e.event_type for e in events] == ["PLANNER_RESULT", "POLICY_CHECK", "POLICY_CHECK", "NOTE"]
+    planner, allowed, denied, note = events
+    assert planner.detail == {"scenario": "unsafe_shutdown", "planner_mode": "demo_scenario"}
+    assert planner.decision is None
+    assert allowed.decision == "ALLOWED" and allowed.detail["tool"] == "restart_sync"
+    assert denied.decision == "DENIED" and denied.detail["tool"] == "shutdown_factory"
+    assert note.decision is None and note.detail is None  # absent -> None
+    dumped = response.model_dump()["events"][0]
+    assert "decision" in dumped and "detail" in dumped
