@@ -1,6 +1,7 @@
 """Tests for Shivani's constrained proposal and retrieval foundation."""
 
 import unittest
+from types import SimpleNamespace
 
 from pydantic import ValidationError
 
@@ -10,7 +11,13 @@ from backend.agent.procedures import (
     SEED_PROCEDURES,
     get_fallback_procedure,
 )
-from backend.agent.retrieval import format_query_text, retrieve_with_fallback
+from backend.agent.retrieval import (
+    EMBEDDING_DIMENSIONS,
+    create_embedding,
+    format_query_text,
+    retrieve_from_atlas,
+    retrieve_with_fallback,
+)
 
 
 SYNC_FAILURE = {
@@ -30,6 +37,40 @@ NETWORK_FAILURE = {
     "backlog": 7,
     "message": "Network link unavailable",
 }
+
+
+class FakeEmbeddings:
+    def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
+        self.dimensions = dimensions
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        item = SimpleNamespace(embedding=[0.01] * self.dimensions)
+        return SimpleNamespace(data=[item])
+
+
+class FakeOpenAI:
+    def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
+        self.embeddings = FakeEmbeddings(dimensions)
+
+
+class FakeCursor:
+    def __init__(self, documents):
+        self.documents = documents
+
+    async def to_list(self, length=None):
+        return self.documents[:length]
+
+
+class FakeCollection:
+    def __init__(self, documents):
+        self.documents = documents
+        self.pipeline = None
+
+    async def aggregate(self, pipeline):
+        self.pipeline = pipeline
+        return FakeCursor(self.documents)
 
 
 class ProcedureTests(unittest.TestCase):
@@ -64,6 +105,38 @@ class RetrievalTests(unittest.TestCase):
         result = retrieve_with_fallback(NETWORK_FAILURE)
         self.assertEqual(result.retrieval_mode, "deterministic_fallback")
         self.assertIsNone(result.score)
+
+
+class AtlasRetrievalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_embedding_request_is_locked_to_1536_dimensions(self) -> None:
+        client = FakeOpenAI()
+        embedding = await create_embedding("factory recovery", client)
+        self.assertEqual(len(embedding), EMBEDDING_DIMENSIONS)
+        self.assertEqual(
+            client.embeddings.calls[0]["dimensions"], EMBEDDING_DIMENSIONS
+        )
+
+    async def test_embedding_rejects_an_unexpected_dimension(self) -> None:
+        with self.assertRaises(ValueError):
+            await create_embedding("factory recovery", FakeOpenAI(3))
+
+    async def test_atlas_result_is_filtered_and_labelled(self) -> None:
+        document = SEED_PROCEDURES[0].model_dump(exclude={"embedding"})
+        document["score"] = 0.92
+        collection = FakeCollection([document])
+
+        result = await retrieve_from_atlas(
+            SYNC_FAILURE, collection, FakeOpenAI()
+        )
+
+        self.assertEqual(result.retrieval_mode, "atlas_vector")
+        self.assertEqual(result.procedure.procedure_id, "proc_sync_restart")
+        self.assertEqual(result.score, 0.92)
+        vector_search = collection.pipeline[0]["$vectorSearch"]
+        self.assertEqual(
+            vector_search["filter"],
+            {"active": True, "fault_type": "SYNC_PROCESS_DOWN"},
+        )
 
 
 class ProposalTests(unittest.IsolatedAsyncioTestCase):

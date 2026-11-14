@@ -79,3 +79,14 @@ def get_fallback_procedure(health: Mapping[str, object]) -> RecoveryProcedure:
         )
 
     return procedure
+
+
+def format_procedure_text(procedure: RecoveryProcedure) -> str:
+    """Build stable text for a procedure's stored embedding."""
+
+    return (
+        f"fault={procedure.fault_type}; "
+        f"title={procedure.title}; "
+        f"description={procedure.description}; "
+        f"allowed_tool={procedure.allowed_tool}"
+    )
