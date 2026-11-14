@@ -1,1 +1,281 @@
 """Durable run, action-ledger, and audit transitions. Owner: Rhea."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from pymongo import ASCENDING, ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
+from api.schemas import RunView, make_operation_id, new_action_id
+from reliability import storage
+
+CRASH_STAGE = "after_effect_before_verify"
+TERMINAL_RUN_STATUSES = ("COMPLETED", "DENIED")  # resume_run is a no-op for these
+
+
+def _dump(value):
+    """Accept a pydantic model or a plain dict."""
+    return value.model_dump() if hasattr(value, "model_dump") else dict(value)
+
+
+def _strip_id(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+# --- audit -------------------------------------------------------------------
+
+
+async def append_audit(
+    run_id, action_id, actor, event_type, decision, reason, detail, policy_version
+) -> str:
+    """Insert one audit event and return its event_id."""
+    event_id = uuid4().hex
+    await storage.audit_events().insert_one(
+        {
+            "event_id": event_id,
+            "run_id": run_id,
+            "action_id": action_id,
+            "actor": actor,
+            "event_type": event_type,
+            "decision": decision,
+            "reason": reason,
+            "detail": detail,
+            "policy_version": policy_version,
+            "at": storage.utc_now(),
+        }
+    )
+    return event_id
+
+
+async def list_audit(run_id: str) -> dict:
+    cursor = storage.audit_events().find({"run_id": run_id}).sort(
+        [("at", ASCENDING), ("_id", ASCENDING)]
+    )
+    events = [
+        {
+            "at": d["at"],
+            "actor": d["actor"],
+            "event_type": d["event_type"],
+            "reason": d.get("reason"),
+            "action_id": d.get("action_id"),
+            "policy_version": d.get("policy_version"),
+        }
+        async for d in cursor
+    ]
+    return {"events": events}
+
+
+# --- actions -----------------------------------------------------------------
+
+
+async def get_action(action_id: str) -> dict | None:
+    return await storage.action_ledger().find_one({"action_id": action_id})
+
+
+async def create_action(run_id: str, proposal: dict, fault_epoch: int) -> dict:
+    """Idempotent: the same (run, machine, tool, epoch) always yields one doc."""
+    machine_id = proposal["machine_id"]
+    tool = proposal["tool"]
+    operation_id = make_operation_id(run_id, machine_id, tool, fault_epoch)
+    ledger = storage.action_ledger()
+
+    existing = await ledger.find_one({"operation_id": operation_id})
+    if existing is not None:
+        return existing
+
+    action_id = new_action_id()
+    doc = {
+        "_id": action_id,
+        "action_id": action_id,
+        "run_id": run_id,
+        "operation_id": operation_id,
+        "agent_id": storage.AGENT_ID,
+        "target": machine_id,
+        "action_type": tool,
+        "status": "PLANNED",
+        "policy_decision": None,
+        "attempt_count": 0,
+        "external_receipt": None,
+        "verification": None,
+        "procedure_id": proposal.get("procedure_id"),
+        "rationale": proposal.get("rationale"),
+        "proposal": dict(proposal),
+        "fault_epoch": fault_epoch,
+        "created_at": storage.utc_now(),
+        "started_at": None,
+        "verified_at": None,
+    }
+    try:
+        await ledger.insert_one(doc)
+    except DuplicateKeyError:
+        # Lost a race with another creator: return the winner's doc.
+        return await ledger.find_one({"operation_id": operation_id})
+    return doc
+
+
+async def _transition(action_id: str, from_statuses, fields: dict) -> dict | None:
+    """Apply fields only if the action is in one of from_statuses.
+
+    Returns the updated doc, or the unchanged current doc if the guard failed.
+    """
+    doc = await storage.action_ledger().find_one_and_update(
+        {"action_id": action_id, "status": {"$in": list(from_statuses)}},
+        {"$set": fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc if doc is not None else await get_action(action_id)
+
+
+async def mark_authorized(action_id: str, decision) -> dict | None:
+    return await _transition(
+        action_id,
+        ("PLANNED", "AUTHORIZED"),
+        {"status": "AUTHORIZED", "policy_decision": _dump(decision)},
+    )
+
+
+async def mark_denied(action_id: str, reason: str, policy_version: int | None = None) -> dict | None:
+    return await _transition(
+        action_id,
+        ("PLANNED", "AUTHORIZED"),
+        {
+            "status": "DENIED",
+            "policy_decision": {
+                "allowed": False,
+                "policy_version": policy_version,
+                "reason": reason,
+            },
+        },
+    )
+
+
+async def claim_action_atomically(action_id: str, owner: str) -> bool:
+    """AUTHORIZED -> EXECUTING in one atomic step. True only for the winner."""
+    doc = await storage.action_ledger().find_one_and_update(
+        {"action_id": action_id, "status": "AUTHORIZED"},
+        {
+            "$set": {
+                "status": "EXECUTING",
+                "started_at": storage.utc_now(),
+                "claimed_by": owner,
+            },
+            "$inc": {"attempt_count": 1},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc is not None
+
+
+async def mark_effect_verified(action_id: str, actual: dict, external_receipt=None) -> dict | None:
+    now = storage.utc_now()
+    fields = {
+        "status": "EFFECT_VERIFIED",
+        "verification": {"effect_present": True, "checked_at": now},
+        "verified_at": now,
+    }
+    if external_receipt is not None:
+        fields["external_receipt"] = external_receipt
+    return await _transition(action_id, ("EXECUTING", "REQUIRES_REVIEW"), fields)
+
+
+async def mark_requires_review(action_id: str, actual: dict, external_receipt=None) -> dict | None:
+    fields = {
+        "status": "REQUIRES_REVIEW",
+        "verification": {
+            "effect_present": bool(actual.get("effect_present", False)),
+            "checked_at": storage.utc_now(),
+        },
+    }
+    if external_receipt is not None:
+        fields["external_receipt"] = external_receipt
+    return await _transition(action_id, ("EXECUTING", "AUTHORIZED"), fields)
+
+
+async def get_machine_ledger(run_id: str) -> list[dict]:
+    cursor = storage.action_ledger().find({"run_id": run_id}).sort("created_at", ASCENDING)
+    return [_strip_id(d) async for d in cursor]
+
+
+# --- runs --------------------------------------------------------------------
+
+
+def _worker_status(doc: dict) -> str:
+    expires = doc.get("lease_expires_at")
+    if doc.get("lease_owner") and expires:
+        if datetime.fromisoformat(expires) > datetime.now(timezone.utc):
+            return "ACTIVE"
+    return "IDLE"
+
+
+async def get_run(run_id: str) -> dict | None:
+    doc = await storage.agent_runs().find_one({"_id": run_id})
+    if doc is None:
+        return None
+    return RunView(
+        run_id=doc["run_id"],
+        status=doc["status"],
+        machine_id=doc["machine_id"],
+        procedure_id=doc.get("procedure_id"),
+        retrieval_mode=doc.get("retrieval_mode"),
+        current_action_id=doc.get("current_action_id"),
+        restart_count=doc.get("restart_count", 0),
+        worker_status=_worker_status(doc),
+    ).model_dump()
+
+
+async def set_run_status(run_id: str, status: str, **fields) -> dict:
+    doc = await storage.agent_runs().find_one_and_update(
+        {"_id": run_id},
+        {
+            "$set": {**fields, "status": status, "updated_at": storage.utc_now()},
+            "$inc": {"version": 1},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if doc is None:
+        raise ValueError(f"run {run_id} does not exist")
+    return doc
+
+
+async def arm_crash(run_id: str, stage: str) -> dict:
+    if stage != CRASH_STAGE:
+        raise ValueError(f"unsupported crash stage: {stage}")
+    result = await storage.agent_runs().update_one(
+        {"_id": run_id},
+        {
+            "$set": {
+                "crash_armed": True,
+                "crash_stage": stage,
+                "updated_at": storage.utc_now(),
+            },
+            "$inc": {"version": 1},
+        },
+    )
+    if result.matched_count == 0:
+        raise ValueError(f"run {run_id} does not exist")
+    return {"armed": True}
+
+
+async def resume_run(run_id: str) -> dict:
+    """Release the unfinished run for reconciliation. Never mints a new run_id."""
+    doc = await storage.agent_runs().find_one_and_update(
+        {"_id": run_id, "status": {"$nin": list(TERMINAL_RUN_STATUSES)}},
+        {
+            "$set": {
+                "status": "NEEDS_RECONCILIATION",
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "updated_at": storage.utc_now(),
+            },
+            "$inc": {"restart_count": 1, "version": 1},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if doc is None:
+        # Either missing, or COMPLETED/DENIED (resume is a no-op for those).
+        current = await storage.agent_runs().find_one({"_id": run_id})
+        if current is None:
+            raise ValueError(f"run {run_id} does not exist")
+        return {"run_id": run_id, "status": current["status"]}
+    return {"run_id": run_id, "status": "NEEDS_RECONCILIATION"}
