@@ -23,14 +23,14 @@ A simulated factory has three machines (`machine_a`, `machine_b`, `machine_c`) t
 |---|---|---|
 | **1. Normal recovery** | **Stop sync**, then **Run recovery** | Machine B goes unhealthy, the run goes `QUEUED` → `DIAGNOSING` → `ACTION_PENDING` → `RUNNING` → `COMPLETED`, Machine B is healthy again, factory `restart_count` is exactly 1. |
 | **2. Crash and resume** | Stop sync, then create a run with `crash_armed: true` (API call, see below) | The worker kills itself (`os._exit(42)`) after the repair but before verification. A restarted worker takes over the run after the 10 s lease expires, sees the repair already happened, verifies it, and completes. Same `run_id`, same `operation_id`, `restart_count` stays 1. |
-| **3. Unsafe action** | **Try unsafe action** | The agent proposes `shutdown_factory`. The policy check denies it, the run ends `DENIED`, the audit shows the denial, and the factory is never called. Machine B's `restart_count` does not change. |
+| **3. Unsafe action** | Create a run with `scenario: "unsafe_shutdown"` (API call) | The agent proposes `shutdown_factory`. The policy check denies it, the run ends `DENIED`, the audit shows the denial, and the factory is never called. Machine B's `restart_count` does not change. |
 
-**Reset** restores all machines to healthy. If a run is stuck (for example the worker was killed on purpose), Reset asks for confirmation and force-aborts it. Run and audit history is never deleted.
+**Reset** restores all machines to healthy. The UI button is blocked while a run is active. To clear a stuck run (for example the worker was killed on purpose), call the reset API with `force: true`, which aborts active runs. Run and audit history is never deleted.
 
 ## Architecture
 
 ```
-Browser ── Vercel / Next.js (frontend/)
+Browser ── Next.js (frontend/)
               │  HTTPS + CORS, 1-second polling (no WebSocket)
           API (FastAPI, backend/api)   ── read + run-control routes
               │                │
@@ -44,9 +44,7 @@ Browser ── Vercel / Next.js (frontend/)
         lease owner + expiry; controlled crash and takeover
 ```
 
-- The API and the worker are **separate processes**. The worker is never a FastAPI background task.
-- The API never reads Mongo directly for runs: it calls the `reliability` module (`get_run`, `list_audit`, `get_machine_ledger`, `enqueue_run`, `resume_run`, `arm_crash`).
-- Factory state lives in MongoDB (not SQLite), in its own collection.
+The API and the worker are separate processes. Factory state lives in MongoDB, in its own collection.
 
 ### Invariants the system keeps
 
@@ -56,21 +54,9 @@ Browser ── Vercel / Next.js (frontend/)
 4. External verification happens before `EFFECT_VERIFIED`.
 5. Resume never reruns a successful effect. Ambiguous state becomes `REQUIRES_REVIEW`, never a blind repeat.
 
-## Repo layout
-
-```
-frontend/            Next.js control center (App Router, TypeScript)
-backend/api/         FastAPI routes: read_routes, scenario_routes, factory_client, schemas
-backend/factory/     Factory simulator (see backend/factory/README.md)
-backend/reliability/ storage, ledger, policies, executor, worker
-backend/agent/       LangGraph planner, retrieval, seed procedures
-backend/tests/       pytest suites
-scripts/             seed.py (vector index + procedures), demo_reset.py
-```
-
 ## Run it locally
 
-Requirements: Python 3.10 or newer, Node 20 or newer, a MongoDB Atlas cluster.
+Requirements: Python 3.10 or newer, Node 20.9 or newer, a MongoDB Atlas cluster.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -110,7 +96,7 @@ curl -X POST http://localhost:8000/api/runs \
   -d '{"machine_id":"machine_b","crash_armed":true}'
 ```
 
-The worker process will exit with code 42 right after the repair. **Restart it** (`python -m reliability.worker`, or let your platform's restart policy do it). After the 10 s lease expires, the new worker takes the run over and completes it. You can also force it with `POST /api/runs/{run_id}/resume`.
+The worker process will exit with code 42 right after the repair. **Restart it** (`python -m reliability.worker`). After the 10 s lease expires, the new worker takes the run over and completes it. You can also force it with `POST /api/runs/{run_id}/resume`.
 
 ## API
 
@@ -129,8 +115,6 @@ Base URL is `NEXT_PUBLIC_API_BASE_URL`. Schemas are in `backend/api/schemas.py`.
 | POST | `/api/runs/{id}/resume` | Moves an unfinished run to `NEEDS_RECONCILIATION`. Same `run_id`. No-op for finished runs |
 | POST | `/api/demo/crash-arm` | `{run_id, stage:"after_effect_before_verify"}`, one-shot per run |
 
-Run statuses: `QUEUED`, `CREATED`, `DIAGNOSING`, `ACTION_PENDING`, `RUNNING`, `NEEDS_RECONCILIATION`, `COMPLETED`, `FAILED`, `DENIED`.
-Action statuses: `PLANNED`, `AUTHORIZED`, `EXECUTING`, `EFFECT_VERIFIED`, `DENIED`, `FAILED`, `REQUIRES_REVIEW`.
 
 ## Configuration
 
@@ -141,19 +125,12 @@ Action statuses: `PLANNED`, `AUTHORIZED`, `EXECUTING`, `EFFECT_VERIFIED`, `DENIE
 | `FACTORY_BASE_URL` | API, worker | Public URL of the factory service |
 | `FACTORY_TOKEN` | factory, API, worker | Optional. If set on the factory, every POST needs header `X-Factory-Token` |
 | `FACTORY_COLLECTION` | factory | Collection for machine state (default `factory_machines`) |
-| `CORS_ORIGINS` | API | Comma-separated allowed origins, the exact Vercel URL in production |
+| `CORS_ORIGINS` | API | Comma-separated allowed origins, e.g. the frontend URL |
 | `GEMINI_API_KEY` | worker, seed script | LLM planner and embeddings. Never in the frontend |
 | `LLM_MODEL`, `EMBEDDING_MODEL`, `VECTOR_INDEX_NAME` | worker, seed script | Model names and vector index name |
 | `NEXT_PUBLIC_API_BASE_URL` | frontend | API URL. Baked in at build time. If empty, the page runs a clearly labelled browser-only preview |
 
 No secrets belong in the repo or in any `NEXT_PUBLIC_` variable.
-
-## Deploy
-
-- **Factory** (repo root): `uvicorn backend.factory.main:app --host 0.0.0.0 --port $PORT`
-- **API** (from `backend/`): `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
-- **Worker** (from `backend/`): `python -m reliability.worker`. **Set a restart-on-exit policy**, otherwise the crash demo's worker stays dead.
-- **Frontend** (Vercel): Root Directory `frontend`, env `NEXT_PUBLIC_API_BASE_URL=<API URL>` (no trailing slash). Then set the API's `CORS_ORIGINS` to the Vercel URL and redeploy the API. Rebuild the frontend after changing `NEXT_PUBLIC_API_BASE_URL`.
 
 ## Tests
 
@@ -161,8 +138,8 @@ No secrets belong in the repo or in any `NEXT_PUBLIC_` variable.
 cd backend && python -m pytest tests -q
 ```
 
-Tests that need MongoDB skip themselves when the connection is not configured: set `BACKEND_MONGODB_URI` (or `MONGODB_URI`) for the API live tests, and `TEST_MONGODB_URI` for the factory tests. They use throwaway databases and collections and clean up after themselves.
+Tests that need MongoDB skip themselves when the connection is not configured: set `BACKEND_MONGODB_URI` for the API live tests and `TEST_MONGODB_URI` for the factory tests.
 
 ## Technologies
 
-Everything in this repository was written during the hackathon on Nov 14, 2026. Third-party dependencies: MongoDB Atlas (Sandbox) and Atlas Vector Search, FastAPI, Uvicorn, PyMongo, LangGraph, the Google Gemini API, Next.js, React, Tailwind CSS, Vercel, and Railway.
+Everything in this repository was written during the hackathon on Nov 14, 2026. Third-party dependencies: MongoDB Atlas (Sandbox) and Atlas Vector Search, FastAPI, Uvicorn, PyMongo, LangGraph, the Google Gemini API, Next.js, React, and Tailwind CSS.
