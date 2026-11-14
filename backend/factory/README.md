@@ -22,11 +22,12 @@ Machines: `machine_a`, `machine_b`, `machine_c`. Faults: `NONE`, `SYNC_PROCESS_D
 | POST | `/machines/{id}/break` | `{fault_type}` | machine health; `fault_epoch` +1, `backlog` = 125 |
 | POST | `/machines/{id}/restart-sync` | `{operation_id}` | repair result (below) |
 | POST | `/machines/{id}/reconnect` | `{operation_id}` | repair result (below) |
-| GET | `/machines/{id}/verify` | `expected_action=restart_sync\|reconnect`, optional `operation_id` | verify result (below) |
+| GET | `/machines/{id}/verify` | `expected_action=restart_sync\|reconnect_network`, optional `operation_id` | verify result (below) |
 | POST | `/simulation/reset` | | `{ok: true, machines: [...]}` |
 
 **Repair result:** `operation_id, machine_id, action_type, applied, replayed, effect_present, reason, fault_epoch,
-fault_type, healthy, restart_count, reconnect_count`. `reason` is `applied`, `wrong_action_for_fault` or `already_healthy`.
+fault_type, healthy, restart_count, reconnect_count`. `action_type` is `restart_sync` or `reconnect_network`
+(names match `ActionType` in `backend/api/schemas.py`). `reason` is `applied`, `wrong_action_for_fault` or `already_healthy`.
 
 **Verify result:** `machine_id, effect_present, receipt_exists, receipt_applied, receipt_epoch, state_effect_present,
 operation_id, healthy, fault_type, fault_epoch, restart_count, reconnect_count, expected_action`.
@@ -51,7 +52,7 @@ operation_id, healthy, fault_type, fault_epoch, restart_count, reconnect_count, 
 
 ## Demo reset
 `python scripts/demo_reset.py`: refuses (exit 2) while any run in `agent_runs` is not
-`COMPLETED/COMPLETE/FAILED/DENIED`; exit 3 if Atlas can't be checked. `--force`, `--skip-run-check`.
+`COMPLETED/FAILED/DENIED` (so `QUEUED` and in-progress runs block it); exit 3 if Atlas can't be checked. `--force`, `--skip-run-check`.
 Uses `FACTORY_BASE_URL` (+ `FACTORY_TOKEN`).
 
 ## Tests

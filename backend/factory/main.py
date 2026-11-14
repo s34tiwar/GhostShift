@@ -88,7 +88,7 @@ def create_app(store_factory: Callable[[], FactoryStore] = FactoryStore.from_env
     @app.get("/machines/{machine_id}/verify")
     def verify(
         machine_id: str,
-        expected_action: Literal["restart_sync", "reconnect"] = Query(...),
+        expected_action: Literal["restart_sync", "reconnect_network"] = Query(...),
         operation_id: Optional[str] = Query(default=None, max_length=300),
         store: FactoryStore = Depends(store_of),
     ):

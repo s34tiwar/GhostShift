@@ -17,7 +17,7 @@ FAULT_TYPES: tuple[str, ...] = (FAULT_NONE, FAULT_SYNC, FAULT_NETWORK)
 BREAKABLE_FAULTS: tuple[str, ...] = (FAULT_SYNC, FAULT_NETWORK)
 
 ACTION_RESTART_SYNC = "restart_sync"
-ACTION_RECONNECT = "reconnect"
+ACTION_RECONNECT = "reconnect_network"  # ActionType in backend/api/schemas.py
 ACTIONS: tuple[str, ...] = (ACTION_RESTART_SYNC, ACTION_RECONNECT)
 
 # Which fault each repair action fixes.

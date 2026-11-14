@@ -112,6 +112,8 @@ def test_same_operation_id_replays_without_second_repair(factory_client):
 def test_reconnect_repairs_network_fault(factory_client):
     brk(factory_client, fault="NETWORK_DISCONNECTED")
     r = reconnect(factory_client, "op_net").json()
+    assert r["action_type"] == "reconnect_network"
+    assert verify(factory_client, action="reconnect_network", op="op_net")["effect_present"] is True
     assert r["applied"] is True and r["reconnect_count"] == 1 and r["restart_count"] == 0 and r["healthy"] is True
 
 
@@ -192,7 +194,7 @@ def test_verify_without_operation_id_uses_last_operation(factory_client):
 def test_verify_false_for_wrong_action_or_stale_epoch(factory_client):
     brk(factory_client)
     restart(factory_client, "op_s")
-    assert verify(factory_client, action="reconnect", op="op_s")["effect_present"] is False
+    assert verify(factory_client, action="reconnect_network", op="op_s")["effect_present"] is False
     brk(factory_client)  # new fault: old receipt is stale
     v = verify(factory_client, op="op_s")
     assert v["effect_present"] is False and v["receipt_exists"] is True and v["receipt_epoch"] == 1

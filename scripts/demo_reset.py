@@ -1,6 +1,6 @@
 """Reset synthetic factory demo state. Owners: Arav and Rhea.
 
-Safety: refuses to reset while any run in Atlas `agent_runs` is still in flight, so a
+Safety: refuses to reset while any run in Atlas `agent_runs` is still in flight (status not COMPLETED/FAILED/DENIED), so a
 rehearsal reset can't pull the rug out from under the worker. This script only READS
 Atlas; the reset itself goes through the factory's HTTP API.
 
@@ -24,8 +24,8 @@ import sys
 import urllib.error
 import urllib.request
 
-# Both spellings accepted until the team settles on one (Rhea's enum vs. addendum diagram).
-TERMINAL_STATUSES = {"COMPLETED", "COMPLETE", "FAILED", "DENIED"}
+# Terminal RunStatus values from backend/api/schemas.py (COMPLETED is canonical).
+TERMINAL_STATUSES = {"COMPLETED", "FAILED", "DENIED"}
 
 
 def active_runs() -> list[dict]:
