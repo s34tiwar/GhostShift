@@ -24,6 +24,7 @@ export default function Home() {
   const [previewMachines, setPreviewMachines] = useState(initialMachines);
   const [previewPhase, setPreviewPhase] = useState<PreviewPhase>("idle");
   const [previewStep, setPreviewStep] = useState(-1);
+  const [previewScenario, setPreviewScenario] = useState<"normal" | "crash" | "unsafe" | null>(null);
   const [factoryMachines, setFactoryMachines] = useState<FactoryMachine[]>([]);
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunView | null>(null);
@@ -57,6 +58,10 @@ export default function Home() {
   useEffect(() => {
     if (hasBackend || previewPhase !== "running") return;
     const timer = window.setTimeout(() => {
+      if (previewScenario === "unsafe" && previewStep === 3) {
+        setPreviewPhase("denied");
+        return;
+      }
       if (previewStep === 3) {
         setPreviewMachines((current) => current.map((machine) => machine.machine_id === target
           ? { ...machine, status: "recovering", restart_count: machine.restart_count + 1 }
@@ -72,7 +77,7 @@ export default function Home() {
       }
     }, 1100);
     return () => window.clearTimeout(timer);
-  }, [previewPhase, previewStep]);
+  }, [previewPhase, previewScenario, previewStep]);
 
   useEffect(() => {
     if (!hasBackend) return;
@@ -152,6 +157,7 @@ export default function Home() {
 
   async function runRecovery(options: { crashArmed?: boolean; scenario?: "unsafe_shutdown" } = {}) {
     if (!hasBackend) {
+      setPreviewScenario(options.scenario === "unsafe_shutdown" ? "unsafe" : options.crashArmed ? "crash" : "normal");
       setPreviewPhase("running");
       setPreviewStep(1);
       return;
@@ -177,6 +183,7 @@ export default function Home() {
       setPreviewMachines(initialMachines);
       setPreviewPhase("idle");
       setPreviewStep(-1);
+      setPreviewScenario(null);
       return;
     }
     let force = false;
@@ -215,11 +222,12 @@ export default function Home() {
     ? Boolean(run?.status === "COMPLETED" && targetMachine?.healthy && actions.some((action) => action.status === "EFFECT_VERIFIED"))
     : previewPhase === "complete";
   const terminalReview = Boolean(run && ["DENIED", "FAILED", "NEEDS_RECONCILIATION"].includes(run.status));
-  const incidentState = recovered ? "recovered" : activeRun || terminalReview || previewPhase === "running" ? "recovering" : faulted ? "faulted" : "ready";
+  const incidentState = recovered ? "recovered" : activeRun || terminalReview || previewPhase === "running" || previewPhase === "denied" ? "recovering" : faulted ? "faulted" : "ready";
   const statusText = hasBackend && !loaded ? "Connecting to backend"
     : hasBackend && machines.length === 0 ? "Backend unavailable"
     : hasBackend && run?.status === "COMPLETED" && machines[1]?.status === "reconciled" ? "Recovery verified"
     : hasBackend && run?.status === "DENIED" ? "Unsafe action blocked"
+    : !hasBackend && previewPhase === "denied" ? "Unsafe action blocked"
     : hasBackend && run && stoppedReason(audit) === "aborted" ? "Aborted by reset"
     : hasBackend && run && ["FAILED", "DENIED", "COMPLETED"].includes(run.status) ? "Review required"
     : activeRun || previewPhase === "running" && !hasBackend ? "Recovery in progress"
@@ -237,7 +245,7 @@ export default function Home() {
           <button className="button danger" onClick={stopSync} disabled={busy || Boolean(activeRun) || (hasBackend ? !targetMachine || targetMachine.fault_type !== "NONE" : previewPhase === "faulted" || previewPhase === "running")}>Break sync</button>
           <button className="button primary" onClick={() => runRecovery()} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery</button>
           <button className="button crash" onClick={() => runRecovery({ crashArmed: true })} disabled={busy || (hasBackend ? !targetMachine || targetMachine.fault_type === "NONE" || Boolean(activeRun) : previewPhase !== "faulted")}>Run recovery, crash armed</button>
-          <button className="button unsafe" onClick={() => runRecovery({ scenario: "unsafe_shutdown" })} disabled={busy || Boolean(activeRun) || (hasBackend && !targetMachine)}>Try unsafe action</button>
+          <button className="button unsafe" onClick={() => runRecovery({ scenario: "unsafe_shutdown" })} disabled={busy || Boolean(activeRun) || (hasBackend ? !targetMachine : previewPhase === "running")}>Try unsafe action</button>
           <button className="reset-button" onClick={resetDemo} disabled={busy}>Reset</button>
         </div>
       </section>
@@ -250,6 +258,7 @@ export default function Home() {
         machine={targetMachine}
         audit={audit}
         actions={actions}
+        previewOutcome={!hasBackend && previewPhase === "denied" ? "denied" : undefined}
       />
       <footer><span>GhostShift / Toronto 2026</span><span>Agents in context ↗</span></footer>
     </div>

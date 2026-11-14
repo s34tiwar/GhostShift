@@ -1,7 +1,7 @@
 import type { AuditEvent, FactoryMachine, LedgerEntry, Machine, RunView } from "./types";
 
 export type ActivityState = "pending" | "active" | "done" | "blocked";
-export type PreviewPhase = "idle" | "faulted" | "running" | "complete";
+export type PreviewPhase = "idle" | "faulted" | "running" | "complete" | "denied";
 
 export const TERMINAL_RUN_STATUSES = ["COMPLETED", "FAILED", "DENIED"] as const;
 
@@ -19,6 +19,7 @@ export function stoppedReason(audit: AuditEvent[]): "aborted" | "attempts" | nul
 export function previewSteps(phase: PreviewPhase, activeStep: number): ActivityState[] {
   return Array.from({ length: 6 }, (_, index) => {
     if (phase === "complete") return "done";
+    if (phase === "denied") return index < 3 ? "done" : index === 3 ? "blocked" : "pending";
     if (phase === "idle") return "pending";
     if (phase === "faulted") return index === 0 ? "done" : "pending";
     return index < activeStep ? "done" : index === activeStep ? "active" : "pending";

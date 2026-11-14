@@ -26,6 +26,7 @@ interface BackendActivityProps {
   machine?: FactoryMachine;
   audit: AuditEvent[];
   actions: LedgerEntry[];
+  previewOutcome?: "denied";
 }
 
 type Evidence = { text: string; tone?: "danger" | "ok" | "warn" };
@@ -100,7 +101,7 @@ function evidenceFor(
   return items;
 }
 
-function ActivityPresentation({ states, live, run, runStatus, incidentState, machine, audit, actions }: BackendActivityProps) {
+function ActivityPresentation({ states, live, run, runStatus, incidentState, machine, audit, actions, previewOutcome }: BackendActivityProps) {
   const actualTarget = targetStep(states);
   const [visibleStep, setVisibleStep] = useState(incidentState === "ready" ? -1 : incidentState === "faulted" ? 0 : 1);
 
@@ -124,6 +125,11 @@ function ActivityPresentation({ states, live, run, runStatus, incidentState, mac
   const stoppedText = stopped === "aborted"
     ? "A forced demo reset aborted this run. Its history is kept and no further steps ran."
     : "The worker picked this run up too many times and stopped it to avoid a crash loop.";
+  const denied = run?.status === "DENIED" || previewOutcome === "denied";
+  const showDenied = denied && spotlightIndex === 3 && spotlightState === "blocked";
+  const shownEvidence = showDenied
+    ? [{ text: "Decision: DENIED", tone: "danger" as const }, { text: "Unsafe tool: shutdown_factory" }, { text: "Factory state: UNCHANGED", tone: "ok" as const }]
+    : evidence;
 
   return <section className="activity-section" aria-labelledby="activity-title">
     <div className="activity-heading">
@@ -145,18 +151,18 @@ function ActivityPresentation({ states, live, run, runStatus, incidentState, mac
       </div>
 
       <div className={`activity-spotlight ${waitingForRun ? "pending" : spotlightState}`} key={`${spotlightIndex}-${spotlightState}`} role="status" aria-live="polite">
-        <div className="spotlight-kicker"><span><i/>{waitingForRun ? "Demo controls ready" : faultObserved ? "Live fault observed" : "Now happening"}</span><b>{waitingForRun ? "Choose a scenario above" : `Step ${String(spotlightIndex + 1).padStart(2, "0")} / 06`}</b></div>
+        <div className="spotlight-kicker"><span><i/>{waitingForRun ? "Demo controls ready" : showDenied ? "Safety policy enforced" : faultObserved ? "Live fault observed" : "Now happening"}</span><b>{waitingForRun ? "Choose a scenario above" : `Step ${String(spotlightIndex + 1).padStart(2, "0")} / 06`}</b></div>
         <div className="spotlight-body">
           <span className="spotlight-icon" aria-hidden="true">{waitingForRun ? "◇" : spotlightState === "blocked" ? "!" : presentationComplete ? "✓" : spotlightIndex + 1}</span>
-          <div><small>{waitingForRun ? "Machine B demo" : stopped ? "Run stopped" : presentationComplete ? "Recovery complete" : spotlight.detail}</small><h3>{waitingForRun ? "Choose a demo scenario" : stopped ? stoppedTitle : presentationComplete ? "Machine B is syncing again" : spotlight.title}</h3><p>{waitingForRun ? "Use the Machine B controls above to break sync, run a normal recovery, arm a deliberate crash, or prove an unsafe action is denied." : stopped ? stoppedText : presentationComplete ? "The repair effect is verified, the run is complete, and Machine B is healthy." : spotlight.narration}</p></div>
+          <div><small>{waitingForRun ? "Machine B demo" : showDenied ? "Policy decision" : stopped ? "Run stopped" : presentationComplete ? "Recovery complete" : spotlight.detail}</small><h3>{waitingForRun ? "Choose a demo scenario" : showDenied ? "DENIED — unsafe action blocked" : stopped ? stoppedTitle : presentationComplete ? "Machine B is syncing again" : spotlight.title}</h3><p>{waitingForRun ? "Use the Machine B controls above to break sync, run a normal recovery, arm a deliberate crash, or prove an unsafe action is denied." : showDenied ? "The shutdown request violates the recovery policy. No repair was applied, and Machine B was left unchanged." : stopped ? stoppedText : presentationComplete ? "The repair effect is verified, the run is complete, and Machine B is healthy." : spotlight.narration}</p></div>
         </div>
-        {!waitingForRun && <div className="spotlight-evidence">{evidence.map((item) => <span key={item.text} className={item.tone ? `evidence-${item.tone}` : undefined}>{item.text}</span>)}</div>}
+        {!waitingForRun && <div className="spotlight-evidence">{shownEvidence.map((item) => <span key={item.text} className={item.tone ? `evidence-${item.tone}` : undefined}>{item.text}</span>)}</div>}
       </div>
     </div>
   </section>;
 }
 
 export default function BackendActivity(props: BackendActivityProps) {
-  const presentationKey = props.run?.run_id ?? (props.incidentState === "ready" || props.incidentState === "faulted" ? props.incidentState : "preview-run");
+  const presentationKey = props.run?.run_id ?? props.previewOutcome ?? (props.incidentState === "ready" || props.incidentState === "faulted" ? props.incidentState : "preview-run");
   return <ActivityPresentation key={presentationKey} {...props}/>;
 }
