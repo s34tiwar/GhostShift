@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
-from backend.agent.graph import RecoveryProposal, propose_recovery
+from backend.agent.graph import (
+    GEMINI_RESPONSE_SCHEMA,
+    RecoveryProposal,
+    plan_recovery,
+    propose_recovery,
+)
 from backend.agent.procedures import (
     NoMatchingProcedureError,
     SEED_PROCEDURES,
@@ -40,19 +45,33 @@ NETWORK_FAILURE = {
 
 
 class FakeGeminiModels:
-    def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
+    def __init__(
+        self,
+        dimensions: int = EMBEDDING_DIMENSIONS,
+        proposal=None,
+    ) -> None:
         self.dimensions = dimensions
-        self.calls = []
+        self.proposal = proposal
+        self.embedding_calls = []
+        self.generation_calls = []
 
     async def embed_content(self, **kwargs):
-        self.calls.append(kwargs)
+        self.embedding_calls.append(kwargs)
         item = SimpleNamespace(values=[0.01] * self.dimensions)
         return SimpleNamespace(embeddings=[item])
 
+    async def generate_content(self, **kwargs):
+        self.generation_calls.append(kwargs)
+        return SimpleNamespace(parsed=self.proposal, text=None)
+
 
 class FakeGemini:
-    def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
-        self.models = FakeGeminiModels(dimensions)
+    def __init__(
+        self,
+        dimensions: int = EMBEDDING_DIMENSIONS,
+        proposal=None,
+    ) -> None:
+        self.models = FakeGeminiModels(dimensions, proposal)
 
 
 class FakeCursor:
@@ -113,7 +132,7 @@ class AtlasRetrievalTests(unittest.IsolatedAsyncioTestCase):
         embedding = await create_embedding("factory recovery", client)
         self.assertEqual(len(embedding), EMBEDDING_DIMENSIONS)
         self.assertEqual(
-            client.models.calls[0]["config"]["output_dimensionality"],
+            client.models.embedding_calls[0]["config"]["output_dimensionality"],
             EMBEDDING_DIMENSIONS,
         )
 
@@ -141,6 +160,13 @@ class AtlasRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProposalTests(unittest.IsolatedAsyncioTestCase):
+    def test_gemini_schema_contains_only_the_four_contract_fields(self) -> None:
+        self.assertEqual(
+            set(GEMINI_RESPONSE_SCHEMA["properties"]),
+            {"tool", "machine_id", "procedure_id", "rationale"},
+        )
+        self.assertNotIn("additionalProperties", GEMINI_RESPONSE_SCHEMA)
+
     async def test_planner_proposes_restart_for_sync_failure(self) -> None:
         proposal = await propose_recovery(SYNC_FAILURE)
         self.assertEqual(proposal.tool, "restart_sync")
@@ -160,6 +186,48 @@ class ProposalTests(unittest.IsolatedAsyncioTestCase):
                 procedure_id="bad_procedure",
                 rationale="This must never be accepted.",
             )
+
+    async def test_gemini_proposal_uses_atlas_evidence(self) -> None:
+        document = SEED_PROCEDURES[0].model_dump(exclude={"embedding"})
+        document["score"] = 0.92
+        proposal = RecoveryProposal(
+            tool="restart_sync",
+            machine_id="machine_b",
+            procedure_id="proc_sync_restart",
+            rationale="The sync process is stopped while the network is healthy.",
+        )
+        gemini = FakeGemini(proposal=proposal)
+
+        result = await plan_recovery(
+            SYNC_FAILURE,
+            collection=FakeCollection([document]),
+            gemini_client=gemini,
+        )
+
+        self.assertEqual(result.planner_mode, "gemini")
+        self.assertEqual(result.retrieval.retrieval_mode, "atlas_vector")
+        self.assertEqual(result.proposal, proposal)
+        self.assertEqual(len(gemini.models.generation_calls), 1)
+
+    async def test_mismatched_gemini_tool_uses_visible_fallback(self) -> None:
+        document = SEED_PROCEDURES[0].model_dump(exclude={"embedding"})
+        document["score"] = 0.92
+        mismatched = RecoveryProposal(
+            tool="reconnect_network",
+            machine_id="machine_b",
+            procedure_id="proc_sync_restart",
+            rationale="This tool conflicts with the retrieved procedure.",
+        )
+
+        result = await plan_recovery(
+            SYNC_FAILURE,
+            collection=FakeCollection([document]),
+            gemini_client=FakeGemini(proposal=mismatched),
+        )
+
+        self.assertEqual(result.planner_mode, "deterministic_fallback")
+        self.assertEqual(result.proposal.tool, "restart_sync")
+        self.assertEqual(result.fallback_reason, "ValueError")
 
 
 if __name__ == "__main__":
